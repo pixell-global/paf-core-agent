@@ -93,12 +93,22 @@ class OpenAIProvider(LLMProvider):
         openai_model = self._get_openai_model(request.model)
         messages = self._format_messages(request)
         
+        # Cap max_tokens at OpenAI's limit
+        effective_max_tokens = min(request.max_tokens or 16384, 16384)
+        if request.max_tokens and request.max_tokens > 16384:
+            self.logger.warning(
+                "Requested max_tokens exceeds OpenAI limit, capping",
+                requested_tokens=request.max_tokens,
+                capped_tokens=effective_max_tokens,
+                model=openai_model
+            )
+        
         self.logger.info(
             "Starting OpenAI streaming completion",
             model=openai_model,
             request_id=request.request_id,
             temperature=request.temperature,
-            max_tokens=request.max_tokens
+            max_tokens=effective_max_tokens
         )
         
         try:
@@ -107,7 +117,7 @@ class OpenAIProvider(LLMProvider):
                 model=openai_model,
                 messages=messages,
                 temperature=request.temperature,
-                max_tokens=request.max_tokens,
+                max_tokens=effective_max_tokens,  # Cap at OpenAI's limit
                 stream=True,
                 stream_options={"include_usage": True}
             )
@@ -180,56 +190,22 @@ class OpenAIProvider(LLMProvider):
                         )
                         break
                     
-                    # Smart completion detection - check for natural stopping points
-                    if chunk_count > 30:  # Start checking after 30 chunks
-                        should_complete = self._should_force_completion(
-                            content_buffer, chunk_count, choice.delta.content if choice.delta else ""
-                        )
-                        
-                        if should_complete:
-                            self.logger.info(
-                                "Natural completion point detected, forcing completion",
-                                request_id=request.request_id,
-                                chunk_count=chunk_count,
-                                content_length=len(content_buffer),
-                                detection_reason=should_complete
-                            )
-                            
-                            # Force completion at natural stopping point
-                            yield LLMResponse(
-                                content="",
-                                model=request.model,
-                                provider=self.provider_type.value,
-                                finish_reason="natural_completion",
-                                token_count=self._estimate_tokens(content_buffer),
-                                is_complete=True,
-                                metadata={
-                                    "openai_model": openai_model,
-                                    "request_id": request.request_id,
-                                    "total_content_length": len(content_buffer),
-                                    "forced_completion": True,
-                                    "detection_reason": should_complete,
-                                    "natural_completion": True
-                                }
-                            )
-                            break
-                    
-                    # Fallback safety limits
-                    elif chunk_count > 100:  # Reduced hard limit for quicker intervention
+                    # Emergency safety limit only for truly runaway streams
+                    elif chunk_count > 1000:  # Much higher threshold - only for emergencies
                         self.logger.warning(
-                            "OpenAI stream exceeded safety limit, forcing completion",
+                            "OpenAI stream exceeded emergency safety limit",
                             request_id=request.request_id,
                             chunk_count=chunk_count,
                             content_length=len(content_buffer),
                             last_finish_reason=choice.finish_reason
                         )
                         
-                        # Force completion
+                        # Force completion only in emergency cases
                         yield LLMResponse(
                             content="",
                             model=request.model,
                             provider=self.provider_type.value,
-                            finish_reason="safety_limit",
+                            finish_reason="emergency_safety_limit",
                             token_count=self._estimate_tokens(content_buffer),
                             is_complete=True,
                             metadata={
@@ -237,7 +213,7 @@ class OpenAIProvider(LLMProvider):
                                 "request_id": request.request_id,
                                 "total_content_length": len(content_buffer),
                                 "forced_completion": True,
-                                "safety_triggered": True
+                                "emergency_safety": True
                             }
                         )
                         break
@@ -296,10 +272,21 @@ class OpenAIProvider(LLMProvider):
         openai_model = self._get_openai_model(request.model)
         messages = self._format_messages(request)
         
+        # Cap max_tokens at OpenAI's limit
+        effective_max_tokens = min(request.max_tokens or 16384, 16384)
+        if request.max_tokens and request.max_tokens > 16384:
+            self.logger.warning(
+                "Requested max_tokens exceeds OpenAI limit, capping",
+                requested_tokens=request.max_tokens,
+                capped_tokens=effective_max_tokens,
+                model=openai_model
+            )
+        
         self.logger.info(
             "Starting OpenAI completion",
             model=openai_model,
-            request_id=request.request_id
+            request_id=request.request_id,
+            max_tokens=effective_max_tokens
         )
         
         try:
@@ -307,7 +294,7 @@ class OpenAIProvider(LLMProvider):
                 model=openai_model,
                 messages=messages,
                 temperature=request.temperature,
-                max_tokens=request.max_tokens,
+                max_tokens=effective_max_tokens,  # Cap at OpenAI's limit
                 stream=False
             )
             
@@ -376,76 +363,4 @@ class OpenAIProvider(LLMProvider):
                 **base_health,
                 "status": "unhealthy",
                 "error": str(e)
-            }
-    
-    def _should_force_completion(self, content_buffer: str, chunk_count: int, latest_chunk: str) -> str:
-        """
-        Determine if we should force completion based on content analysis.
-        Returns reason string if completion should be forced, None otherwise.
-        """
-        
-        # Minimum content length before considering completion
-        if len(content_buffer) < 200:
-            return None
-        
-        # Check for natural ending patterns
-        content_lower = content_buffer.lower().strip()
-        
-        # Look for conclusion patterns
-        conclusion_patterns = [
-            "in conclusion",
-            "to summarize", 
-            "in summary",
-            "overall,",
-            "finally,",
-            "these recommendations should",
-            "implementing these",
-            "these insights will help",
-            "this analysis shows",
-            "next steps:"
-        ]
-        
-        for pattern in conclusion_patterns:
-            if pattern in content_lower[-200:]:  # Check last 200 chars
-                # If we've found a conclusion pattern and have substantial content
-                if len(content_buffer) > 500:
-                    return f"conclusion_pattern_{pattern.replace(' ', '_')}"
-        
-        # Check for numbered list completion (common in recommendations)
-        if content_buffer.count('\n') > 5:  # Multi-line content
-            lines = content_buffer.split('\n')
-            last_few_lines = ' '.join(lines[-3:]).lower()
-            
-            # Look for numbered list endings
-            if any(f"{i}." in content_buffer for i in range(1, 10)):  # Has numbered list
-                if any(ending in last_few_lines for ending in [
-                    "budget", "targeting", "optimization", "campaign", "performance",
-                    "recommendations", "strategy", "analysis", "insights"
-                ]):
-                    if len(content_buffer) > 800:  # Substantial content
-                        return "numbered_list_completion"
-        
-        # Check if response seems complete based on structure
-        if len(content_buffer) > 1000:  # Long enough response
-            # Count sentences (rough approximation)
-            sentence_count = content_buffer.count('.') + content_buffer.count('!') + content_buffer.count('?')
-            
-            # If we have many sentences and recent content suggests completion
-            if sentence_count > 8:
-                recent_content = content_buffer[-100:].lower()
-                completion_indicators = [
-                    "should help", "will improve", "these steps", "implementation",
-                    "success", "effective", "optimization", "performance"
-                ]
-                
-                if any(indicator in recent_content for indicator in completion_indicators):
-                    return "structural_completion"
-        
-        # Check for repetitive or low-quality generation
-        if chunk_count > 50:
-            recent_chunks = content_buffer[-200:]  # Last 200 chars
-            if len(set(recent_chunks.split())) < len(recent_chunks.split()) * 0.6:  # High repetition
-                return "repetitive_content"
-        
-        # Don't force completion yet
-        return None 
+            } 

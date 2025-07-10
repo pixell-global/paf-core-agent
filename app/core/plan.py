@@ -501,7 +501,19 @@ class PlanPhase:
         
         # Set max_tokens if not specified
         if max_tokens is None:
-            max_tokens = min(estimated_tokens * 2, 2000)  # 2x estimate, capped at 2000
+            max_tokens = min(estimated_tokens * 2, 100000)  # 2x estimate, capped at 100000
+        
+        # Debug logging for token planning
+        self.logger.info(
+            "Token planning details",
+            intent=intent,
+            complexity=complexity,
+            estimated_tokens=estimated_tokens,
+            calculated_max_tokens=estimated_tokens * 2,
+            final_max_tokens=max_tokens,
+            request_max_tokens=request.max_tokens if hasattr(request, 'max_tokens') else None,
+            file_count=understanding_meta.get("file_count", 0)
+        )
         
         return {
             "temperature": temperature,
@@ -547,27 +559,27 @@ class PlanPhase:
         """Estimate number of output tokens needed."""
         
         base_tokens = {
-            "conversation": 50,
-            "question": 200,
-            "request": 300,
-            "task": 500,
-            "analysis": 600
+            "conversation": 3000,     # Increased from 50
+            "question": 8000,         # Increased from 200
+            "request": 10000,         # Increased from 300
+            "task": 15000,            # Increased from 500
+            "analysis": 20000         # Increased from 600
         }
         
-        tokens = base_tokens.get(intent, 200)
+        tokens = base_tokens.get(intent, 8000)  # Better default
         
         # Adjust for complexity
         complexity_multiplier = {
             "simple": 1.0,
             "moderate": 1.5,
-            "complex": 2.0
+            "complex": 2.5  # Increased from 2.0
         }
         tokens = int(tokens * complexity_multiplier.get(complexity, 1.0))
         
         # Adjust for file context
         file_count = understanding_meta.get("file_count", 0)
         if file_count > 0:
-            tokens += file_count * 100  # Additional tokens per file
+            tokens += file_count * 200  # Increased from 100 tokens per file
         
         return tokens
     

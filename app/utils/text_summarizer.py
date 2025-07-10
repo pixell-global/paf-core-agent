@@ -154,7 +154,7 @@ class TextSummarizer:
                 prompt=user_prompt,
                 system_prompt=system_prompt,
                 temperature=0.3,  # Lower temperature for more consistent summaries
-                max_tokens=300,   # Reasonable summary length
+                max_tokens=1000,  # Increased from 300 - allow more detailed summaries
                 stream=False      # Don't need streaming for summaries
             )
             

@@ -4,7 +4,7 @@ import json
 import time
 from typing import Dict, Any, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 
 from app.schemas import ChatRequest, FileContent, FileContext
@@ -15,137 +15,102 @@ router = APIRouter()
 logger = get_logger("debug_api")
 
 
+# -----------------------------------------------------------------------------------
+# New multipart-friendly implementation (≤10 MB per file)
+# -----------------------------------------------------------------------------------
+
+
 @router.post("/inspect-request")
 async def inspect_chat_request(
-    chat_request: ChatRequest,
-    request: Request,
+    payload: str = Form(..., description="JSON string with ChatRequest-style fields except files"),
+    files: List[UploadFile] = File(None, description="One or more files (each < 10 MB)"),
+    request: Request = None,
     settings: Settings = Depends(get_settings)
 ):
     """
-    Debug endpoint to inspect exactly what the core agent receives.
-    This helps debug file upload and request formatting issues.
+    Debug endpoint that now accepts **multipart/form-data**:
+
+    • `payload` – JSON string containing the usual ChatRequest fields (message, model, etc.).
+    • `files`   – <10 MB each, sent as separate form parts.
     """
-    
+
+    # ------------------------------------------------------------------
+    # Parse payload JSON → dict → ChatRequest (without files for now)
+    # ------------------------------------------------------------------
+    try:
+        payload_dict: Dict[str, Any] = json.loads(payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in payload field: {str(e)}")
+
+    # Basic required field check
+    if "message" not in payload_dict or not str(payload_dict["message"]).strip():
+        raise HTTPException(status_code=400, detail="`message` is required inside payload")
+
+    # ------------------------------------------------------------------
+    # Handle uploaded files – enforce 10 MB limit
+    # ------------------------------------------------------------------
+    max_bytes = 10 * 1024 * 1024  # 10MB
+    file_details = []
+
+    if files:
+        for idx, up_file in enumerate(files):
+            file_bytes = await up_file.read()
+            size = len(file_bytes)
+
+            if size > max_bytes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File '{up_file.filename}' exceeds 10MB limit ({size} bytes)"
+                )
+
+            # Keep small preview (first 100 bytes decoded if possible)
+            try:
+                preview = file_bytes[:100].decode("utf-8", errors="replace")
+            except Exception:
+                preview = "<binary>"
+
+            file_details.append({
+                "index": idx,
+                "file_name": up_file.filename,
+                "content_type": up_file.content_type,
+                "file_size": size,
+                "preview": preview
+            })
+
+    # ------------------------------------------------------------------
+    # Compose inspection result (similar shape as before)
+    # ------------------------------------------------------------------
     inspection_result = {
         "timestamp": time.time(),
         "request_inspection": {
             "message": {
-                "content": chat_request.message,
-                "length": len(chat_request.message),
-                "preview": chat_request.message[:100] + "..." if len(chat_request.message) > 100 else chat_request.message
+                "content": payload_dict["message"],
+                "length": len(payload_dict["message"]),
+                "preview": payload_dict["message"][:100] + "…" if len(payload_dict["message"]) > 100 else payload_dict["message"]
             },
             "files": {
-                "count": len(chat_request.files) if chat_request.files else 0,
-                "files_provided": bool(chat_request.files),
-                "file_details": []
-            },
-            "history": {
-                "has_history": bool(chat_request.history),
-                "message_count": len(chat_request.history) if chat_request.history else 0,
-                "memory_limit": chat_request.memory_limit
+                "count": len(file_details),
+                "file_details": file_details
             },
             "options": {
-                "model": chat_request.model,
-                "temperature": chat_request.temperature,
-                "max_tokens": chat_request.max_tokens,
-                "show_thinking": chat_request.show_thinking,
-                "context_window_size": chat_request.context_window_size
+                "model": payload_dict.get("model"),
+                "temperature": payload_dict.get("temperature"),
+                "max_tokens": payload_dict.get("max_tokens")
             }
         },
         "raw_request_info": {
-            "content_type": request.headers.get("content-type"),
-            "content_length": request.headers.get("content-length"),
-            "user_agent": request.headers.get("user-agent"),
-            "origin": request.headers.get("origin")
+            "content_type": request.headers.get("content-type") if request else None,
+            "content_length": request.headers.get("content-length") if request else None,
+            "user_agent": request.headers.get("user-agent") if request else None,
         }
     }
-    
-    # Detailed file inspection
-    if chat_request.files:
-        for i, file_item in enumerate(chat_request.files):
-            file_detail = {
-                "index": i,
-                "schema_type": "unknown",
-                "validation": {
-                    "is_valid": True,
-                    "errors": []
-                }
-            }
-            
-            # Determine schema type and extract details
-            try:
-                if hasattr(file_item, 'file_name'):
-                    # New FileContent schema
-                    file_detail.update({
-                        "schema_type": "FileContent",
-                        "file_name": file_item.file_name,
-                        "file_type": file_item.file_type,
-                        "file_size": file_item.file_size,
-                        "has_content": bool(file_item.content),
-                        "content_length": len(file_item.content) if file_item.content else 0,
-                        "content_type": type(file_item.content).__name__ if file_item.content else "None",
-                        "has_signed_url": bool(file_item.signed_url),
-                        "signed_url": file_item.signed_url[:50] + "..." if file_item.signed_url and len(file_item.signed_url) > 50 else file_item.signed_url,
-                        "content_preview": file_item.content[:100] + "..." if file_item.content and len(file_item.content) > 100 else file_item.content
-                    })
-                    
-                    # Validation for FileContent
-                    if not file_item.file_name:
-                        file_detail["validation"]["is_valid"] = False
-                        file_detail["validation"]["errors"].append("Missing file_name")
-                    
-                    if not file_item.content and not file_item.signed_url:
-                        file_detail["validation"]["is_valid"] = False
-                        file_detail["validation"]["errors"].append("Missing both content and signed_url")
-                    
-                    if file_item.file_size <= 0:
-                        file_detail["validation"]["is_valid"] = False
-                        file_detail["validation"]["errors"].append("Invalid file_size")
-                
-                elif hasattr(file_item, 'path'):
-                    # Legacy FileContext schema
-                    file_detail.update({
-                        "schema_type": "FileContext",
-                        "path": file_item.path,
-                        "has_content": bool(file_item.content),
-                        "content_length": len(file_item.content) if file_item.content else 0,
-                        "content_type": type(file_item.content).__name__ if file_item.content else "None",
-                        "summary": getattr(file_item, 'summary', None),
-                        "content_preview": file_item.content[:100] + "..." if file_item.content and len(file_item.content) > 100 else file_item.content
-                    })
-                    
-                    # Validation for FileContext
-                    if not file_item.path:
-                        file_detail["validation"]["is_valid"] = False
-                        file_detail["validation"]["errors"].append("Missing path")
-                    
-                    if not file_item.content:
-                        file_detail["validation"]["is_valid"] = False
-                        file_detail["validation"]["errors"].append("Missing content")
-                
-                else:
-                    file_detail["validation"]["is_valid"] = False
-                    file_detail["validation"]["errors"].append("Unknown file schema - missing both file_name and path")
-                
-            except Exception as e:
-                file_detail["validation"]["is_valid"] = False
-                file_detail["validation"]["errors"].append(f"Error inspecting file: {str(e)}")
-            
-            inspection_result["request_inspection"]["files"]["file_details"].append(file_detail)
-    
-    # File processing capability check
-    file_processing_status = await _check_file_processing_capabilities()
-    inspection_result["file_processing_capabilities"] = file_processing_status
-    
-    # Log the inspection for server-side debugging
+
     logger.info(
-        "Request inspection performed",
-        files_count=inspection_result["request_inspection"]["files"]["count"],
-        message_length=inspection_result["request_inspection"]["message"]["length"],
-        valid_files=sum(1 for f in inspection_result["request_inspection"]["files"]["file_details"] if f["validation"]["is_valid"]),
-        schema_types=[f["schema_type"] for f in inspection_result["request_inspection"]["files"]["file_details"]]
+        "Multipart inspection performed",
+        files=len(file_details),
+        message_length=len(payload_dict["message"])
     )
-    
+
     return JSONResponse(content=inspection_result)
 
 
