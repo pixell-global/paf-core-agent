@@ -1,0 +1,33 @@
+{
+  "id": "example-upee-enhancer",
+  "name": "Example UPEE Enhancer",
+  "version": "1.0.0",
+  "plugin_type": "upee",
+  "description": "Example plugin that enhances UPEE loop phases",
+  "author": "PAF Core Team",
+  "dependencies": [],
+  "required_capabilities": ["text_processing", "llm_integration"],
+  "configuration_schema": {
+    "type": "object",
+    "properties": {
+      "enhancement_level": {
+        "type": "string",
+        "enum": ["basic", "advanced"],
+        "default": "basic"
+      },
+      "custom_prompts": {
+        "type": "object",
+        "properties": {
+          "understand": {"type": "string"},
+          "plan": {"type": "string"},
+          "execute": {"type": "string"},
+          "evaluate": {"type": "string"}
+        }
+      }
+    }
+  },
+  "api_version": "1.0",
+  "min_core_version": "1.0.0",
+  "tags": ["upee", "enhancement", "example"],
+  "license": "MIT"
+}

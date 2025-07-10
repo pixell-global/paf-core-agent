@@ -2,6 +2,7 @@
 
 import time
 from typing import Dict, Any
+import asyncio
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -63,14 +64,26 @@ async def check_llm_providers(settings: Settings) -> Dict[str, Dict[str, Any]]:
 
 
 async def check_worker_agents(request: Request, settings: Settings) -> Dict[str, Dict[str, Any]]:
-    """Check health of worker agents."""
+    """Check health of worker agents with graceful handling of busy connections."""
     services = {}
     
     # Check if gRPC manager is available in app state
     if hasattr(request.app.state, 'grpc_manager') and request.app.state.grpc_manager:
         try:
             grpc_manager = request.app.state.grpc_manager
-            service_health = grpc_manager.get_service_health()
+            
+            # Use non-blocking method to get cached health status
+            # This avoids triggering new health checks that might timeout during busy periods
+            try:
+                service_health = grpc_manager.get_service_health_non_blocking()
+            except Exception as e:
+                # Fallback if non-blocking method fails
+                services["worker_agent"] = ServiceHealth(
+                    status="unknown",
+                    error=f"Unable to get health status: {str(e)}",
+                    last_check=time.time()
+                ).model_dump()
+                return services
             
             # Convert ServiceHealth objects to dictionaries
             for service_name, health in service_health.items():
@@ -92,12 +105,31 @@ async def check_worker_agents(request: Request, settings: Settings) -> Dict[str,
                         "last_check": time.time(),
                         "error": "Unable to parse health status"
                     }
+                    
+            # If no services were found, provide a default worker_agent status
+            if not services:
+                services["worker_agent"] = ServiceHealth(
+                    status="unknown",
+                    error="No health data available",
+                    last_check=time.time()
+                ).model_dump()
+                
         except Exception as e:
-            services["worker_agent"] = ServiceHealth(
-                status="unhealthy",
-                error=f"gRPC health check failed: {str(e)}",
-                last_check=time.time()
-            ).model_dump()
+            # More graceful error handling - don't fail completely
+            error_msg = str(e)
+            if "timeout" in error_msg.lower():
+                # Handle timeout scenarios more gracefully
+                services["worker_agent"] = ServiceHealth(
+                    status="busy",
+                    error="Service temporarily busy - likely processing requests",
+                    last_check=time.time()
+                ).model_dump()
+            else:
+                services["worker_agent"] = ServiceHealth(
+                    status="unhealthy",
+                    error=f"gRPC health check failed: {error_msg}",
+                    last_check=time.time()
+                ).model_dump()
     else:
         # Fallback when gRPC manager is not available
         services["worker_agent"] = ServiceHealth(
@@ -109,7 +141,7 @@ async def check_worker_agents(request: Request, settings: Settings) -> Dict[str,
     return services
 
 
-@router.get("/health", response_model=HealthStatus)
+@router.get("", response_model=HealthStatus)
 async def health_check(request: Request, settings: Settings = Depends(get_settings)):
     """Get application health status."""
     start_time = time.time()
@@ -121,14 +153,18 @@ async def health_check(request: Request, settings: Settings = Depends(get_settin
     # Combine all service checks
     all_services = {**llm_services, **worker_services}
     
-    # Determine overall status
+    # Determine overall status with better handling of busy services
     overall_status = "healthy"
     for service in all_services.values():
-        if service["status"] == "unhealthy":
+        status = service["status"]
+        if status == "unhealthy":
             overall_status = "unhealthy"
             break
-        elif service["status"] == "degraded":
+        elif status == "degraded":
             overall_status = "degraded"
+        elif status == "busy" and overall_status == "healthy":
+            # Busy is better than degraded but not as good as healthy
+            overall_status = "busy"
     
     health_status = HealthStatus(
         status=overall_status,
@@ -138,20 +174,21 @@ async def health_check(request: Request, settings: Settings = Depends(get_settin
     )
     
     # Return appropriate HTTP status code
-    status_code = 200 if overall_status == "healthy" else 503
+    # Consider "busy" as still operational (200) rather than error (503)
+    status_code = 200 if overall_status in ["healthy", "busy"] else 503
     return JSONResponse(
         status_code=status_code,
         content=health_status.model_dump()
     )
 
 
-@router.get("/health/live")
+@router.get("/live")
 async def liveness_check():
     """Simple liveness check for container orchestration."""
     return {"status": "alive", "timestamp": time.time()}
 
 
-@router.get("/health/ready")
+@router.get("/ready")
 async def readiness_check(settings: Settings = Depends(get_settings)):
     """Readiness check for container orchestration."""
     # Check if essential services are available

@@ -1,0 +1,1 @@
+# Import all models to ensure they're registered with SQLAlchemy

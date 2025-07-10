@@ -152,7 +152,7 @@ class EvaluatePhase:
         plan_meta: Dict[str, Any],
         execute_meta: Dict[str, Any]
     ) -> float:
-        """Assess how complete the response is."""
+        """Assess how complete the response is, including detection of cutoffs."""
         
         score = 0.8  # Base score
         
@@ -160,14 +160,41 @@ class EvaluatePhase:
         if execute_meta.get("tokens_generated", 0) > 0:
             score += 0.1
         
+        # Check for potential cutoffs and incomplete responses
+        actual_tokens = execute_meta.get("tokens_generated", 0)
+        model_used = execute_meta.get("model_used", "")
+        
+        # Detect potential cutoffs based on various signals
+        cutoff_indicators = self._detect_response_cutoff(execute_meta, request)
+        
+        if cutoff_indicators["has_cutoff"]:
+            # Significant penalty for detected cutoffs
+            cutoff_penalty = 0.4 * cutoff_indicators["confidence"]
+            score -= cutoff_penalty
+            
+            self.logger.warning(
+                "Response cutoff detected in evaluation",
+                cutoff_confidence=cutoff_indicators["confidence"],
+                cutoff_reasons=cutoff_indicators["reasons"],
+                penalty=cutoff_penalty
+            )
+        
         # Check if planned tokens were roughly met
         planned_tokens = plan_meta.get("estimated_tokens", 0)
-        actual_tokens = execute_meta.get("tokens_generated", 0)
         
         if planned_tokens > 0:
             token_ratio = actual_tokens / planned_tokens
             if 0.5 <= token_ratio <= 2.0:  # Reasonable range
                 score += 0.1
+            elif token_ratio < 0.3:  # Very low token ratio suggests cutoff
+                score -= 0.15
+        
+        # Check if response is suspiciously short for the request complexity
+        intent = understanding_meta.get("intent", "general")
+        file_count = understanding_meta.get("file_count", 0)
+        
+        if intent in ["analysis", "task"] and file_count > 0 and actual_tokens < 50:
+            score -= 0.2  # Complex requests with files should have substantial responses
         
         # Check if external calls were made when planned
         planned_external = plan_meta.get("needs_external_calls", False)
@@ -178,7 +205,50 @@ class EvaluatePhase:
         elif not planned_external:
             score += 0.05  # Good if no external calls were needed
         
-        return min(score, 1.0)
+        return max(0.0, min(score, 1.0))
+    
+    def _detect_response_cutoff(self, execute_meta: Dict[str, Any], request: ChatRequest) -> Dict[str, Any]:
+        """Detect if the response was cut off or incomplete."""
+        
+        cutoff_indicators = {
+            "has_cutoff": False,
+            "confidence": 0.0,
+            "reasons": []
+        }
+        
+        # Check for forced completion from safety limits
+        if execute_meta.get("forced_completion") or execute_meta.get("safety_triggered"):
+            cutoff_indicators["has_cutoff"] = True
+            cutoff_indicators["confidence"] = 0.9
+            cutoff_indicators["reasons"].append("forced_completion_detected")
+        
+        # Check for very low token count on complex requests
+        tokens = execute_meta.get("tokens_generated", 0)
+        if hasattr(request, 'files') and request.files and tokens < 30:
+            cutoff_indicators["has_cutoff"] = True
+            cutoff_indicators["confidence"] = max(cutoff_indicators["confidence"], 0.7)
+            cutoff_indicators["reasons"].append("low_tokens_with_files")
+        
+        # Check for runaway detection
+        if execute_meta.get("runaway_detected"):
+            cutoff_indicators["has_cutoff"] = True
+            cutoff_indicators["confidence"] = max(cutoff_indicators["confidence"], 0.8)
+            cutoff_indicators["reasons"].append("runaway_stream_detected")
+        
+        # Check for finish reason indicating issues
+        finish_reason = execute_meta.get("finish_reason", "")
+        problematic_reasons = ["max_chunks", "safety", "timeout", "runaway"]
+        if any(reason in finish_reason for reason in problematic_reasons):
+            cutoff_indicators["has_cutoff"] = True
+            cutoff_indicators["confidence"] = max(cutoff_indicators["confidence"], 0.6)
+            cutoff_indicators["reasons"].append(f"finish_reason_{finish_reason}")
+        
+        # Check for abrupt ending patterns (basic heuristic)
+        if tokens > 0 and tokens < 100:  # Short responses are more likely to be incomplete
+            cutoff_indicators["confidence"] = max(cutoff_indicators["confidence"], 0.3)
+            cutoff_indicators["reasons"].append("suspiciously_short_response")
+        
+        return cutoff_indicators
     
     async def _assess_accuracy(
         self,
@@ -301,8 +371,8 @@ class EvaluatePhase:
     ) -> bool:
         """Determine if the response needs refinement."""
         
-        # Quality threshold
-        quality_threshold = 0.7
+        # Quality threshold for retry trigger
+        quality_threshold = 0.5
         
         if quality_score < quality_threshold:
             return True
@@ -333,8 +403,10 @@ class EvaluatePhase:
         
         recommendations = []
         
-        if quality_score < 0.7:
-            recommendations.append("Overall quality below threshold - consider refinement")
+        if quality_score < 0.5:
+            recommendations.append("Overall quality below retry threshold - triggering retry")
+        elif quality_score < 0.7:
+            recommendations.append("Overall quality acceptable but could be improved")
         
         if completeness < 0.7:
             recommendations.append("Response may be incomplete - ensure all aspects are addressed")

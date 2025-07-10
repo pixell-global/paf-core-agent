@@ -4,8 +4,8 @@ import time
 from typing import Dict, Any, Optional
 
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase
-from app.utils.logging_config import get_logger
 from app.settings import Settings
+from app.utils.logging_config import get_logger
 
 
 class PlanPhase:
@@ -59,6 +59,12 @@ class PlanPhase:
             # Plan external calls
             external_calls_plan = await self._plan_external_calls(request, understanding_meta, strategy)
             
+            # Plan file processing approach
+            file_processing_plan = await self._plan_file_processing(request, understanding_meta, strategy)
+            
+            # Plan memory context usage
+            memory_plan = await self._plan_memory_usage(request, understanding_meta, strategy)
+            
             # Plan response structure
             structure_plan = await self._plan_response_structure(request, understanding_meta, strategy)
             
@@ -67,7 +73,8 @@ class PlanPhase:
             
             # Build plan summary
             content = self._build_plan_summary(
-                strategy, model_plan, external_calls_plan, structure_plan, execution_params
+                strategy, model_plan, external_calls_plan, file_processing_plan, 
+                memory_plan, structure_plan, execution_params
             )
             
             metadata = {
@@ -77,6 +84,8 @@ class PlanPhase:
                 "model_recommendation": model_plan["recommended_model"],
                 "needs_external_calls": external_calls_plan["needs_calls"],
                 "external_call_types": external_calls_plan["call_types"],
+                "file_processing": file_processing_plan,
+                "memory_usage": memory_plan,
                 "response_structure": structure_plan["type"],
                 "estimated_tokens": execution_params["estimated_output_tokens"],
                 "temperature": execution_params["temperature"],
@@ -170,6 +179,13 @@ class PlanPhase:
             if file_count > 3:
                 base_strategy["complexity"] = "complex"
                 base_strategy["confidence"] *= 0.9
+        
+        # Adjust strategy based on conversation history
+        history_count = understanding_meta.get("conversation_history", {}).get("message_count", 0)
+        if history_count > 0:
+            base_strategy["approach"] = "memory_aware_" + base_strategy["approach"]
+            if history_count > 5:
+                base_strategy["complexity"] = "moderate" if base_strategy["complexity"] == "simple" else "complex"
         
         return base_strategy
     
@@ -313,6 +329,108 @@ class PlanPhase:
                 reasons.append("complex task benefits from distributed processing")
         
         return f"External calls planned: {', '.join(reasons)}"
+    
+    async def _plan_file_processing(
+        self, 
+        request: ChatRequest, 
+        understanding_meta: Dict[str, Any],
+        strategy: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Plan how to handle file processing during execution."""
+        
+        file_processing = understanding_meta.get("file_processing", {})
+        processed_files = understanding_meta.get("processed_files", [])
+        
+        if not processed_files:
+            return {
+                "approach": "no_files",
+                "strategy": "direct_response",
+                "context_inclusion": "none"
+            }
+        
+        files_with_content = file_processing.get("files_with_content", 0)
+        files_with_signed_urls = file_processing.get("files_with_signed_urls", 0)
+        total_file_size = file_processing.get("total_file_size", 0)
+        
+        # Determine processing approach
+        if total_file_size > 50000:  # 50KB threshold
+            approach = "selective_content"
+            strategy = "summarize_and_highlight"
+        elif files_with_signed_urls > 0:
+            approach = "mixed_content"
+            strategy = "inline_plus_references"
+        else:
+            approach = "full_content"
+            strategy = "complete_context"
+        
+        # Determine context inclusion strategy
+        if len(processed_files) > 5:
+            context_inclusion = "summarized"
+        elif total_file_size > 20000:
+            context_inclusion = "selective"
+        else:
+            context_inclusion = "full"
+        
+        return {
+            "approach": approach,
+            "strategy": strategy,
+            "context_inclusion": context_inclusion,
+            "file_count": len(processed_files),
+            "files_with_content": files_with_content,
+            "files_with_signed_urls": files_with_signed_urls,
+            "total_size": total_file_size
+        }
+    
+    async def _plan_memory_usage(
+        self, 
+        request: ChatRequest, 
+        understanding_meta: Dict[str, Any],
+        strategy: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Plan how to use conversation history (short-term memory)."""
+        
+        history_info = understanding_meta.get("conversation_history", {})
+        message_count = history_info.get("message_count", 0)
+        
+        if message_count == 0:
+            return {
+                "approach": "no_history",
+                "strategy": "fresh_context",
+                "context_inclusion": "none"
+            }
+        
+        history_tokens = history_info.get("total_tokens_estimate", 0)
+        was_truncated = history_info.get("history_truncated", False)
+        files_in_history = history_info.get("files_in_history", 0)
+        
+        # Determine memory approach
+        if history_tokens > 2000:
+            approach = "selective_memory"
+            strategy = "recent_focus"
+        elif message_count > 8:
+            approach = "contextual_memory"
+            strategy = "relevant_extraction"
+        else:
+            approach = "full_memory"
+            strategy = "complete_context"
+        
+        # Determine context inclusion
+        if was_truncated:
+            context_inclusion = "truncated_with_summary"
+        elif files_in_history > 0:
+            context_inclusion = "history_with_file_refs"
+        else:
+            context_inclusion = "full_history"
+        
+        return {
+            "approach": approach,
+            "strategy": strategy,
+            "context_inclusion": context_inclusion,
+            "message_count": message_count,
+            "history_tokens": history_tokens,
+            "was_truncated": was_truncated,
+            "files_in_history": files_in_history
+        }
     
     async def _plan_response_structure(
         self, 
@@ -458,6 +576,8 @@ class PlanPhase:
         strategy: Dict[str, Any],
         model_plan: Dict[str, Any],
         external_calls_plan: Dict[str, Any],
+        file_processing_plan: Dict[str, Any],
+        memory_plan: Dict[str, Any],
         structure_plan: Dict[str, Any],
         execution_params: Dict[str, Any]
     ) -> str:
@@ -468,6 +588,14 @@ class PlanPhase:
             f"Model: {model_plan['recommended_model']} ({model_plan['reason']})",
             f"Structure: {structure_plan['type']}"
         ]
+        
+        # Add file processing info
+        if file_processing_plan["approach"] != "no_files":
+            summary_parts.append(f"Files: {file_processing_plan['approach']} ({file_processing_plan['file_count']} files)")
+        
+        # Add memory usage info
+        if memory_plan["approach"] != "no_history":
+            summary_parts.append(f"Memory: {memory_plan['approach']} ({memory_plan['message_count']} msgs)")
         
         if external_calls_plan["needs_calls"]:
             summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
