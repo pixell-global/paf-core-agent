@@ -60,6 +60,7 @@ The core cognitive loop consists of four phases:
 - **🧠 Multi-Provider LLM** - OpenAI, Anthropic Claude, AWS Bedrock support
 - **📁 File Context** - Intelligent file processing and summarization
 - **🔗 gRPC Integration** - Communication with downstream worker agents
+- **🤝 A2A Integration** - Agent-to-Agent communication with card discovery
 - **📊 Observability** - Structured logging, Prometheus metrics, AWS X-Ray tracing
 - **🔒 Security** - JWT/HMAC authentication, mTLS for gRPC
 - **🐳 Container Ready** - Docker support with optimized image size
@@ -101,6 +102,31 @@ GET /api/chat/models
 
 Lists all available LLM models and their status.
 
+### A2A Integration (Agent-to-Agent Protocol)
+```http
+GET /api/chat/a2a/agents
+```
+
+Discovers available A2A agents using the standard A2A protocol.
+
+```http
+GET /api/chat/a2a/agents/{agent_id}
+```
+
+Gets detailed information about a specific A2A agent using Agent Card standard.
+
+```http
+GET /api/chat/a2a/status
+```
+
+Checks A2A server health and configuration status.
+
+#### Legacy A2A Endpoints (deprecated)
+```http
+GET /api/chat/a2a/cards        # Use /api/chat/a2a/agents instead
+GET /api/chat/a2a/cards/{id}   # Use /api/chat/a2a/agents/{id} instead
+```
+
 ## 🛠️ Development
 
 ### Project Structure
@@ -129,7 +155,40 @@ paf-core-agent/
 | `AWS_REGION` | AWS region for Bedrock | No | us-east-1 |
 | `DEBUG` | Enable debug mode | No | false |
 | `MAX_CONTEXT_TOKENS` | Maximum context window | No | 4000 |
-| `DEFAULT_MODEL` | Default LLM model | No | gpt-3.5-turbo |
+| `DEFAULT_MODEL` | Default LLM model | No | gpt-4o |
+| `A2A_ENABLED` | Enable A2A functionality | No | true |
+| `A2A_SERVER_URL` | A2A server endpoint | No | http://localhost:9999 |
+| `A2A_AGENT_CARD` | Agent card identifier | No | - |
+| `A2A_TIMEOUT` | A2A request timeout (seconds) | No | 10 |
+
+### A2A SDK 설치 (선택사항)
+
+공식 Google A2A SDK를 사용하려면:
+
+```bash
+# 공식 Google A2A 저장소 클론
+git clone https://github.com/google/A2A.git
+cd A2A/a2a-python-sdk
+
+# 개발 모드로 설치
+pip install -e .
+```
+
+SDK를 설치하지 않으면 표준 A2A 프로토콜 HTTP 구현을 사용합니다.
+
+### A2A 기능 테스트
+
+A2A 기능을 테스트하려면:
+
+```bash
+# A2A 테스트 실행
+python scripts/test_a2a.py
+```
+
+이 스크립트는 다음을 테스트합니다:
+- A2A 서버 상태 확인
+- 에이전트 탐색 (Agent Discovery)
+- 메시지 전송
 
 ### Running Tests
 ```bash

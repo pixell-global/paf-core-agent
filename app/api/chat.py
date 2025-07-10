@@ -55,6 +55,55 @@ async def upee_chat_stream(
         # Initialize UPEE engine
         upee_engine = UPEEEngine(settings, grpc_manager)
         
+        # A2A 서버로부터 에이전트 카드 가져오기 (A2A 표준 준수)
+        if settings.a2a_enabled:
+            yield await create_sse_event(
+                EventType.THINKING,
+                json.dumps({
+                    "phase": "init",
+                    "content": "A2A 서버에서 에이전트를 탐색하는 중...",
+                    "timestamp": time.time()
+                }),
+                f"{request_id}-a2a-discover"
+            )
+            
+            # A2A 표준에 따른 에이전트 탐색
+            agents = await upee_engine.a2a_client.discover_agents()
+            if agents:
+                agent_info = []
+                for agent in agents:
+                    info = {
+                        "name": agent.get("name", "Unknown Agent"),
+                        "description": agent.get("description", ""),
+                        "version": agent.get("version", ""),
+                        "url": agent.get("url", ""),
+                        "capabilities": agent.get("capabilities", {}),
+                        "skills": agent.get("skills", [])
+                    }
+                    agent_info.append(info)
+                
+                yield await create_sse_event(
+                    EventType.CONTENT,
+                    json.dumps({
+                        "type": "a2a_agents",
+                        "agents": agent_info,
+                        "count": len(agents),
+                        "timestamp": time.time()
+                    }),
+                    f"{request_id}-a2a-agents"
+                )
+                upee_engine.logger.info(f"Discovered {len(agents)} A2A agents for request {request_id}")
+            else:
+                yield await create_sse_event(
+                    EventType.THINKING,
+                    json.dumps({
+                        "phase": "init",
+                        "content": "A2A 서버에서 에이전트를 찾을 수 없습니다. 기본 모드로 진행합니다.",
+                        "timestamp": time.time()
+                    }),
+                    f"{request_id}-a2a-fallback"
+                )
+        
         # Process through UPEE loop
         async for event in upee_engine.process_request(request, request_id):
             event_type = event.get("event")
@@ -293,22 +342,145 @@ async def list_providers(
                 "model_count": len(status.get("models", []))
             }
         
-        return {
-            "providers": providers,
-            "summary": {
-                "total_providers": len(providers),
-                "healthy_providers": len([p for p in providers.values() if p["available"]]),
-                "total_models": sum(p["model_count"] for p in providers.values())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get providers: {str(e)}")
+
+
+@router.get("/a2a/agents")
+async def discover_a2a_agents(
+    settings: Settings = Depends(get_settings)
+):
+    """A2A 서버에서 사용 가능한 에이전트들을 탐색합니다 (A2A 표준 준수)."""
+    if not settings.a2a_enabled:
+        raise HTTPException(status_code=503, detail="A2A functionality is disabled")
+    
+    try:
+        from app.utils.a2a_client import A2AClient
+        
+        a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        agents = await a2a_client.discover_agents()
+        
+        # A2A 표준에 따른 에이전트 정보 구성
+        agent_info = []
+        for agent in agents:
+            info = {
+                "name": agent.get("name", "Unknown Agent"),
+                "description": agent.get("description", ""),
+                "version": agent.get("version", ""),
+                "url": agent.get("url", ""),
+                "capabilities": agent.get("capabilities", {}),
+                "skills": agent.get("skills", []),
+                "provider": agent.get("provider", {}),
+                "authentication": agent.get("authentication", {})
             }
+            agent_info.append(info)
+        
+        return {
+            "agents": agent_info,
+            "count": len(agents),
+            "server_url": settings.a2a_server_url,
+            "discovery_method": "standard_a2a",
+            "timestamp": time.time()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to discover A2A agents: {str(e)}")
+
+@router.get("/a2a/cards")
+async def list_a2a_cards_legacy(
+    settings: Settings = Depends(get_settings)
+):
+    """[Legacy] A2A 서버로부터 사용 가능한 카드 목록을 가져옵니다. /a2a/agents 사용을 권장합니다."""
+    # Legacy endpoint - redirect to new endpoint
+    return await discover_a2a_agents(settings)
+
+
+@router.get("/a2a/agents/{agent_id}")
+async def get_a2a_agent_details(
+    agent_id: str,
+    settings: Settings = Depends(get_settings)
+):
+    """특정 A2A 에이전트의 상세 정보를 가져옵니다 (A2A 표준 준수)."""
+    if not settings.a2a_enabled:
+        raise HTTPException(status_code=503, detail="A2A functionality is disabled")
+    
+    try:
+        from app.utils.a2a_client import A2AClient
+        
+        a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        # A2A 표준에 따른 에이전트 카드 가져오기
+        agent_card = await a2a_client.get_agent_card()
+        
+        if not agent_card:
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found or not accessible")
+        
+        # A2A 표준 Agent Card 구조에 따른 응답
+        return {
+            "agent": {
+                "id": agent_id,
+                "name": agent_card.get("name", "Unknown Agent"),
+                "description": agent_card.get("description", ""),
+                "version": agent_card.get("version", ""),
+                "url": agent_card.get("url", ""),
+                "documentationUrl": agent_card.get("documentationUrl", ""),
+                "capabilities": agent_card.get("capabilities", {}),
+                "skills": agent_card.get("skills", []),
+                "provider": agent_card.get("provider", {}),
+                "authentication": agent_card.get("authentication", {}),
+                "defaultInputModes": agent_card.get("defaultInputModes", ["text"]),
+                "defaultOutputModes": agent_card.get("defaultOutputModes", ["text"])
+            },
+            "server_url": settings.a2a_server_url,
+            "discovery_method": "agent_card",
+            "timestamp": time.time()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch A2A agent details: {str(e)}")
+
+@router.get("/a2a/cards/{card_id}")
+async def get_a2a_card_legacy(
+    card_id: str,
+    settings: Settings = Depends(get_settings)
+):
+    """[Legacy] 특정 A2A 카드의 상세 정보를 가져옵니다. /a2a/agents/{agent_id} 사용을 권장합니다."""
+    # Legacy endpoint - redirect to new endpoint
+    return await get_a2a_agent_details(card_id, settings)
+
+
+@router.get("/a2a/status")
+async def check_a2a_status(
+    settings: Settings = Depends(get_settings)
+):
+    """A2A 서버의 상태를 확인합니다."""
+    if not settings.a2a_enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "message": "A2A functionality is disabled in settings"
         }
     
+    try:
+        from app.utils.a2a_client import A2AClient
+        
+        a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        is_healthy = await a2a_client.health_check()
+        
+        return {
+            "enabled": True,
+            "status": "healthy" if is_healthy else "unhealthy",
+            "server_url": settings.a2a_server_url,
+            "timeout": settings.a2a_timeout,
+            "timestamp": time.time()
+        }
+        
     except Exception as e:
         return {
-            "providers": {},
-            "error": f"Failed to fetch provider information: {str(e)}",
-            "summary": {
-                "total_providers": 0,
-                "healthy_providers": 0,
-                "total_models": 0
-            }
+            "enabled": True,
+            "status": "error",
+            "error": str(e),
+            "server_url": settings.a2a_server_url,
+            "timestamp": time.time()
         } 

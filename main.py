@@ -80,7 +80,7 @@ def create_app() -> FastAPI:
 
     # Include routers
     app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
-    app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+    app.include_router(chat.router, prefix="/api/chat", tags=["chat", "a2a", "agent-discovery"])
     app.include_router(health.router, prefix="/api", tags=["health"])
     app.include_router(files.router, prefix="/api/files", tags=["files"])
     app.include_router(worker.router, prefix="/api/worker", tags=["worker"])
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     import uvicorn
     settings = get_settings()
     uvicorn.run(
-        "app.main:app",
+        "main:app",
         host=settings.host,
         port=settings.port,
         reload=settings.debug,

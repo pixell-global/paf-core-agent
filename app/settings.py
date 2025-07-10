@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     default_model: str = Field(default="gpt-4o", description="Default LLM model")
     show_thinking_default: bool = Field(default=False, description="Show thinking events by default")
     
+    # A2A Server Configuration
+    a2a_server_url: str = Field(default="http://localhost:9999", description="A2A 서버의 엔드포인트 URL")
+    a2a_enabled: bool = Field(default=True, description="A2A 기능 활성화 여부")
+    a2a_agent_card: Optional[str] = Field(default=None, description="A2A 에이전트 카드 ID")
+    a2a_agent_url: Optional[str] = Field(default=None, description="A2A 에이전트 URL")
+    a2a_timeout: int = Field(default=10, description="A2A 요청 타임아웃 (초)")
+    
     @property
     def resolved_default_model(self) -> str:
         """Get the resolved default model, preferring OPENAI_MODEL if set."""

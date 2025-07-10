@@ -15,6 +15,7 @@ from app.core.execute import ExecutePhase
 from app.core.evaluate import EvaluatePhase
 from app.utils.logging_config import get_logger, log_upee_phase
 from app.settings import Settings
+from app.utils.a2a_client import A2AClient
 
 
 class UPEEEngine:
@@ -28,10 +29,13 @@ class UPEEEngine:
     4. Evaluate: Assess quality and refine if needed
     """
     
-    def __init__(self, settings: Settings, grpc_manager=None):
+    def __init__(self, settings: Settings, grpc_manager=None, a2a_client=None):
         self.settings = settings
         self.logger = get_logger("upee_engine")
         self.grpc_manager = grpc_manager
+        
+        # A2AClient 초기화
+        self.a2a_client = a2a_client or A2AClient(settings.a2a_server_url, settings.a2a_timeout)
         
         # Initialize phases
         self.understand_phase = UnderstandPhase(settings)
@@ -220,7 +224,19 @@ class UPEEEngine:
             )
         
         try:
-            # Execute phase yields content events directly
+            plan_result = self.phase_results.get(UPEEPhase.PLAN)
+            # 외부 A2A 서버 호출 필요 시 처리
+            if plan_result and plan_result.metadata.get("needs_external_calls", False):
+                call_types = plan_result.metadata.get("external_call_types", [])
+                if call_types:
+                    # 첫 번째 call_type을 message_type으로 사용, request 전체를 payload로 전달
+                    a2a_response = self.call_external_agent(call_types[0], request.model_dump())
+                    yield {
+                        "event": EventType.CONTENT,
+                        "data": str(a2a_response),
+                        "id": f"{self.current_request_id}-a2a-content"
+                    }
+            # 기존 Execute phase 처리
             async for event in self.execute_phase.process(
                 request,
                 self.current_request_id,
@@ -242,8 +258,8 @@ class UPEEEngine:
                 "Phase completed successfully",
                 {
                     "duration_ms": duration * 1000, 
-                    "tokens_generated": execute_result.metadata.get("tokens_generated", 0),
-                    "model_used": execute_result.metadata.get("model_used", "unknown")
+                    "tokens_generated": execute_result.metadata.get("tokens_generated", 0) if execute_result else 0,
+                    "model_used": execute_result.metadata.get("model_used", "unknown") if execute_result else "unknown"
                 }
             )
             
@@ -349,3 +365,31 @@ class UPEEEngine:
             "data": complete_data.model_dump_json(),
             "id": f"{self.current_request_id}-complete"
         } 
+
+    def call_external_agent(self, message_type: str, payload: dict) -> dict:
+        """외부 A2A 서버에 메시지를 보내고 응답을 반환합니다."""
+        
+        # A2A 기능이 비활성화된 경우
+        if not self.settings.a2a_enabled:
+            self.logger.info("A2A functionality is disabled")
+            return {"status": "disabled", "message": "A2A functionality is disabled"}
+        
+        # A2A 메시지 구성
+        message = {
+            "type": message_type,
+            "payload": payload
+        }
+        
+        if self.settings.a2a_server_url:
+            message["url"] = self.settings.a2a_server_url
+        else:
+            # 기본값 설정
+            message["agent_card"] = "paf-core-agent"
+            self.logger.warning("No agent_card or url configured, using default: paf-core-agent")
+        
+        try:
+            response = self.a2a_client.send_message(message)
+            return response
+        except Exception as e:
+            self.logger.error(f"A2A call failed: {e}")
+            return {"status": "error", "error": str(e)} 
