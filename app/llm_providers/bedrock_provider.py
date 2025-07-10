@@ -81,22 +81,16 @@ class BedrockProvider(LLMProvider):
     
     def _format_claude_request(self, request: LLMRequest) -> Dict[str, Any]:
         """Format request for Claude models on Bedrock."""
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": request.max_tokens or 1000,
-            "temperature": request.temperature,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": request.prompt
-                }
-            ]
-        }
-        
+        prompt = request.prompt
         if request.system_prompt:
-            body["system"] = request.system_prompt
+            prompt = f"Human: {request.system_prompt}\n\n{request.prompt}\n\nAssistant:"
         
-        return body
+        return {
+            "prompt": prompt,
+            "max_tokens_to_sample": request.max_tokens or 50000,  # Much more aggressive
+            "temperature": request.temperature,
+            "stop_sequences": ["\n\nHuman:"]
+        }
     
     def _format_titan_request(self, request: LLMRequest) -> Dict[str, Any]:
         """Format request for Amazon Titan models."""
@@ -107,7 +101,7 @@ class BedrockProvider(LLMProvider):
         return {
             "inputText": prompt,
             "textGenerationConfig": {
-                "maxTokenCount": request.max_tokens or 1000,
+                "maxTokenCount": request.max_tokens or 50000,  # Much more aggressive
                 "temperature": request.temperature,
                 "stopSequences": []
             }
@@ -121,7 +115,7 @@ class BedrockProvider(LLMProvider):
         
         return {
             "prompt": prompt,
-            "max_gen_len": request.max_tokens or 1000,
+            "max_gen_len": request.max_tokens or 50000,  # Much more aggressive
             "temperature": request.temperature,
             "top_p": 0.9
         }

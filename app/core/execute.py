@@ -67,6 +67,18 @@ class ExecutePhase:
             temperature = plan_meta.get("temperature", request.temperature)
             max_tokens = plan_meta.get("max_tokens", request.max_tokens)
             
+            # Log execution parameters for debugging
+            self.logger.info(
+                "Execution parameters configured",
+                request_id=request_id,
+                model=model_to_use,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                planned_max_tokens=plan_meta.get("max_tokens"),
+                request_max_tokens=request.max_tokens,
+                estimated_output_tokens=plan_meta.get("estimated_output_tokens")
+            )
+            
             # Build the prompt
             prompt = await self._build_prompt(request, understanding_result, plan_result)
             

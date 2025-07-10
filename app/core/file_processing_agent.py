@@ -183,6 +183,30 @@ class FileProcessingAgent:
             file_name=getattr(file_item, 'file_name', getattr(file_item, 'path', 'unknown'))
         )
         
+        # Enforce file size limits (100MB default)
+        max_file_size = getattr(self.settings, 'max_file_size', 100 * 1024 * 1024)  # 100MB default
+        
+        if isinstance(file_item, FileContent):
+            file_size = file_item.file_size
+            file_name = file_item.file_name
+        else:  # FileContext
+            content_size = len(file_item.content.encode('utf-8')) if file_item.content else 0
+            file_size = content_size
+            file_name = os.path.basename(file_item.path)
+        
+        if file_size > max_file_size:
+            error_msg = f"File '{file_name}' exceeds maximum size limit of {max_file_size / (1024*1024):.1f}MB (actual: {file_size / (1024*1024):.1f}MB)"
+            self.logger.warning(error_msg, request_id=request_id)
+            return ProcessingResult(
+                success=False,
+                extracted_content="",
+                metadata={"error": error_msg, "file_size": file_size, "max_size": max_file_size},
+                execution_time=0.0,
+                confidence_score=0.0,
+                errors=[error_msg],
+                tool_outputs={}
+            )
+        
         attempt = 0
         while attempt < self.max_retries:
             try:

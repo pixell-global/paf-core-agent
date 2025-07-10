@@ -103,7 +103,7 @@ class ClaudeProvider(LLMProvider):
                 "model": claude_model,
                 "messages": messages,
                 "temperature": request.temperature,
-                "max_tokens": request.max_tokens or 1000,
+                "max_tokens": request.max_tokens or 50000,  # Much more aggressive fallback
                 "stream": True
             }
             
@@ -212,7 +212,7 @@ class ClaudeProvider(LLMProvider):
                 "model": claude_model,
                 "messages": messages,
                 "temperature": request.temperature,
-                "max_tokens": request.max_tokens or 1000
+                "max_tokens": request.max_tokens or 50000  # Much more aggressive fallback
             }
             
             # Add system prompt if provided

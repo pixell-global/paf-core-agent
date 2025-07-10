@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     aws_secret_access_key: Optional[str] = Field(default=None, description="AWS secret key")
     
     # UPEE Configuration
-    max_context_tokens: int = Field(default=4000, description="Maximum context tokens")
+    max_context_tokens: int = Field(default=50000, description="Maximum context tokens")  # Increased from 4000
     default_model: str = Field(default="gpt-4o", description="Default LLM model")
     show_thinking_default: bool = Field(default=False, description="Show thinking events by default")
     
@@ -79,11 +79,11 @@ class Settings(BaseSettings):
         default=[".py", ".js", ".ts", ".md", ".txt", ".json", ".csv", ".html", ".xml", ".yaml", ".yml"],
         description="Supported file types for processing"
     )
-    max_chunk_size: int = Field(default=4000, description="Maximum chunk size for text processing")
-    chunk_overlap: int = Field(default=200, description="Overlap between chunks")
+    max_chunk_size: int = Field(default=20000, description="Maximum chunk size for text processing")  # Increased from 4000
+    chunk_overlap: int = Field(default=500, description="Overlap between chunks")  # Increased from 200
     
     # Text summarization settings
-    max_summary_length: int = Field(default=500, description="Maximum summary length in tokens")
+    max_summary_length: int = Field(default=2000, description="Maximum summary length in tokens")  # Increased from 500
     summary_model_preference: List[str] = Field(
         default=["gpt-3.5-turbo", "claude-3-haiku-20240307"],
         description="Preferred models for summarization (fastest first)"
