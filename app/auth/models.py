@@ -1,205 +1,182 @@
-"""Authentication models and schemas."""
+"""
+Authentication models and utilities.
+Updated to use SQLAlchemy database models.
+"""
 
-import time
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from enum import Enum
+import uuid
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from passlib.context import CryptContext
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from pydantic import BaseModel, Field, EmailStr
+from app.db.models.core import User, APIKey
 
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-class UserRole(str, Enum):
-    """User roles with hierarchical permissions."""
-    ADMIN = "admin"           # Full system access
-    DEVELOPER = "developer"   # API access, file operations, worker tasks
-    USER = "user"            # Basic chat access
-    READONLY = "readonly"    # Read-only access to status/health
-
-
-class Permission(str, Enum):
-    """System permissions."""
-    # Chat permissions
-    CHAT_BASIC = "chat:basic"
-    CHAT_ADVANCED = "chat:advanced"
-    CHAT_FILE_UPLOAD = "chat:file_upload"
+class AuthModels:
+    """Authentication utilities for user and API key management."""
     
-    # API permissions
-    API_MODELS = "api:models"
-    API_PROVIDERS = "api:providers"
-    API_STATUS = "api:status"
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Hash a password using bcrypt."""
+        return pwd_context.hash(password)
     
-    # Worker permissions
-    WORKER_EXECUTE = "worker:execute"
-    WORKER_STATUS = "worker:status"
-    WORKER_MANAGE = "worker:manage"
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        """Verify a password against its hash."""
+        return pwd_context.verify(plain_password, hashed_password)
     
-    # File permissions
-    FILE_PROCESS = "file:process"
-    FILE_ANALYZE = "file:analyze"
+    @staticmethod
+    async def create_user(
+        db: AsyncSession,
+        username: str,
+        email: str,
+        password: str,
+        role: str = "user"
+    ) -> User:
+        """Create a new user in the database."""
+        password_hash = AuthModels.hash_password(password)
+        
+        user = User(
+            username=username,
+            email=email,
+            password_hash=password_hash,
+            role=role
+        )
+        
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        return user
     
-    # Admin permissions
-    ADMIN_USERS = "admin:users"
-    ADMIN_SYSTEM = "admin:system"
-    ADMIN_LOGS = "admin:logs"
+    @staticmethod
+    async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
+        """Get user by username."""
+        result = await db.execute(
+            select(User).where(User.username == username, User.is_active == True)
+        )
+        return result.scalar_one_or_none()
     
-    # Health and monitoring
-    HEALTH_READ = "health:read"
-    METRICS_READ = "metrics:read"
-
-
-class User(BaseModel):
-    """User model."""
-    id: str = Field(description="Unique user identifier")
-    username: str = Field(description="Username")
-    email: Optional[EmailStr] = Field(default=None, description="User email")
-    full_name: Optional[str] = Field(default=None, description="Full display name")
-    role: UserRole = Field(description="User role")
-    is_active: bool = Field(default=True, description="Whether user is active")
-    is_api_user: bool = Field(default=False, description="Whether this is an API-only user")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
-    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
-    api_key_hash: Optional[str] = Field(default=None, description="Hashed API key")
-    permissions: List[Permission] = Field(default_factory=list, description="Additional permissions")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional user metadata")
+    @staticmethod
+    async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+        """Get user by email."""
+        result = await db.execute(
+            select(User).where(User.email == email, User.is_active == True)
+        )
+        return result.scalar_one_or_none()
     
-    class Config:
-        use_enum_values = True
-
-
-class UserCreate(BaseModel):
-    """User creation schema."""
-    username: str = Field(..., min_length=3, max_length=50, description="Username")
-    email: Optional[EmailStr] = Field(default=None, description="User email")
-    full_name: Optional[str] = Field(default=None, description="Full display name")
-    password: Optional[str] = Field(default=None, min_length=8, description="Password for regular users")
-    role: UserRole = Field(default=UserRole.USER, description="User role")
-    is_api_user: bool = Field(default=False, description="Whether this is an API-only user")
-    permissions: List[Permission] = Field(default_factory=list, description="Additional permissions")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional user metadata")
-
-
-class UserUpdate(BaseModel):
-    """User update schema."""
-    email: Optional[EmailStr] = Field(default=None, description="User email")
-    full_name: Optional[str] = Field(default=None, description="Full display name")
-    role: Optional[UserRole] = Field(default=None, description="User role")
-    is_active: Optional[bool] = Field(default=None, description="Whether user is active")
-    permissions: Optional[List[Permission]] = Field(default=None, description="Additional permissions")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional user metadata")
-
-
-class UserResponse(BaseModel):
-    """User response schema (excludes sensitive data)."""
-    id: str = Field(description="Unique user identifier")
-    username: str = Field(description="Username")
-    email: Optional[EmailStr] = Field(default=None, description="User email")
-    full_name: Optional[str] = Field(default=None, description="Full display name")
-    role: UserRole = Field(description="User role")
-    is_active: bool = Field(description="Whether user is active")
-    is_api_user: bool = Field(description="Whether this is an API-only user")
-    created_at: datetime = Field(description="Creation timestamp")
-    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
-    permissions: List[Permission] = Field(description="User permissions")
+    @staticmethod
+    async def authenticate_user(
+        db: AsyncSession, 
+        username: str, 
+        password: str
+    ) -> Optional[User]:
+        """Authenticate user with username and password."""
+        user = await AuthModels.get_user_by_username(db, username)
+        if not user:
+            return None
+        
+        if not AuthModels.verify_password(password, user.password_hash):
+            return None
+        
+        # Update last login
+        user.last_login = datetime.utcnow()
+        await db.commit()
+        
+        return user
     
-    class Config:
-        use_enum_values = True
+    @staticmethod
+    async def create_api_key(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        name: str,
+        permissions: Dict[str, Any],
+        expires_at: Optional[datetime] = None
+    ) -> tuple[APIKey, str]:
+        """Create a new API key for a user."""
+        # Generate random API key
+        import secrets
+        api_key = f"pak_{secrets.token_urlsafe(32)}"
+        key_hash = AuthModels.hash_password(api_key)
+        
+        api_key_obj = APIKey(
+            name=name,
+            key_hash=key_hash,
+            user_id=user_id,
+            permissions=permissions,
+            expires_at=expires_at
+        )
+        
+        db.add(api_key_obj)
+        await db.commit()
+        await db.refresh(api_key_obj)
+        
+        return api_key_obj, api_key
+    
+    @staticmethod
+    async def verify_api_key(db: AsyncSession, api_key: str) -> Optional[User]:
+        """Verify API key and return associated user."""
+        # Get all active API keys (we need to check hash against each)
+        result = await db.execute(
+            select(APIKey)
+            .options(selectinload(APIKey.user))  # Load user relationship
+            .where(APIKey.is_active == True)
+        )
+        api_keys = result.scalars().all()
+        
+        for key_obj in api_keys:
+            if AuthModels.verify_password(api_key, key_obj.key_hash):
+                # Check if key is expired
+                if key_obj.expires_at and key_obj.expires_at < datetime.utcnow():
+                    continue
+                
+                # Update last used
+                key_obj.last_used = datetime.utcnow()
+                await db.commit()
+                
+                return key_obj.user
+        
+        return None
 
-
-class Token(BaseModel):
-    """JWT token response."""
-    access_token: str = Field(description="JWT access token")
-    token_type: str = Field(default="bearer", description="Token type")
-    expires_in: int = Field(description="Token expiration in seconds")
-    user: UserResponse = Field(description="User information")
-
-
-class TokenData(BaseModel):
-    """Token payload data."""
-    user_id: str = Field(description="User ID")
-    username: str = Field(description="Username")
-    role: UserRole = Field(description="User role")
-    permissions: List[Permission] = Field(description="User permissions")
-    exp: float = Field(description="Expiration timestamp")
-    iat: float = Field(description="Issued at timestamp")
-
-
-class APIKey(BaseModel):
-    """API key model."""
-    id: str = Field(description="API key identifier")
-    name: str = Field(description="Human-readable name")
-    key_hash: str = Field(description="Hashed API key")
-    user_id: str = Field(description="Associated user ID")
-    permissions: List[Permission] = Field(description="API key permissions")
-    is_active: bool = Field(default=True, description="Whether key is active")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
-    last_used: Optional[datetime] = Field(default=None, description="Last used timestamp")
-    expires_at: Optional[datetime] = Field(default=None, description="Expiration timestamp")
-    rate_limit: Optional[int] = Field(default=None, description="Requests per minute limit")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-
-class APIKeyCreate(BaseModel):
-    """API key creation schema."""
-    name: str = Field(..., min_length=1, max_length=100, description="Human-readable name")
-    permissions: List[Permission] = Field(description="API key permissions")
-    expires_days: Optional[int] = Field(default=None, description="Expiration in days (None = no expiry)")
-    rate_limit: Optional[int] = Field(default=100, description="Requests per minute limit")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-
-class APIKeyResponse(BaseModel):
-    """API key response (includes the actual key only once)."""
-    id: str = Field(description="API key identifier")
-    name: str = Field(description="Human-readable name")
-    key: Optional[str] = Field(default=None, description="Actual API key (only shown once)")
-    permissions: List[Permission] = Field(description="API key permissions")
-    created_at: datetime = Field(description="Creation timestamp")
-    expires_at: Optional[datetime] = Field(default=None, description="Expiration timestamp")
-    rate_limit: Optional[int] = Field(default=None, description="Requests per minute limit")
-
-
-class LoginRequest(BaseModel):
-    """Login request schema."""
-    username: str = Field(description="Username")
-    password: str = Field(description="Password")
-
-
-class PasswordChangeRequest(BaseModel):
-    """Password change request schema."""
-    current_password: str = Field(description="Current password")
-    new_password: str = Field(min_length=8, description="New password")
-
-
-class AuditLog(BaseModel):
-    """Audit log entry."""
-    id: str = Field(description="Log entry ID")
-    user_id: Optional[str] = Field(default=None, description="User ID (if authenticated)")
-    username: Optional[str] = Field(default=None, description="Username (if authenticated)")
-    action: str = Field(description="Action performed")
-    resource: str = Field(description="Resource accessed")
-    ip_address: str = Field(description="Client IP address")
-    user_agent: Optional[str] = Field(default=None, description="Client user agent")
-    success: bool = Field(description="Whether action was successful")
-    error: Optional[str] = Field(default=None, description="Error message if failed")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Timestamp")
-
-
-class SecurityEvent(BaseModel):
-    """Security event model."""
-    id: str = Field(description="Event ID")
-    event_type: str = Field(description="Type of security event")
-    severity: str = Field(description="Event severity (low, medium, high, critical)")
-    user_id: Optional[str] = Field(default=None, description="Associated user ID")
-    ip_address: str = Field(description="Source IP address")
-    description: str = Field(description="Event description")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional event data")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Event timestamp")
-
-
-class RateLimitInfo(BaseModel):
-    """Rate limit information."""
-    limit: int = Field(description="Request limit")
-    remaining: int = Field(description="Remaining requests")
-    reset_time: float = Field(description="Reset timestamp")
-    retry_after: Optional[int] = Field(default=None, description="Retry after seconds") 
+# Role-based permissions
+class Roles:
+    ADMIN = "admin"
+    DEVELOPER = "developer"
+    USER = "user"
+    READONLY = "readonly"
+    
+    @staticmethod
+    def get_permissions(role: str) -> Dict[str, bool]:
+        """Get permissions for a role."""
+        permissions = {
+            "read_conversations": False,
+            "write_conversations": False,
+            "manage_users": False,
+            "manage_workers": False,
+            "manage_plugins": False,
+            "admin_access": False,
+        }
+        
+        if role == Roles.ADMIN:
+            return {key: True for key in permissions}
+        elif role == Roles.DEVELOPER:
+            permissions.update({
+                "read_conversations": True,
+                "write_conversations": True,
+                "manage_workers": True,
+                "manage_plugins": True,
+            })
+        elif role == Roles.USER:
+            permissions.update({
+                "read_conversations": True,
+                "write_conversations": True,
+            })
+        elif role == Roles.READONLY:
+            permissions.update({
+                "read_conversations": True,
+            })
+        
+        return permissions

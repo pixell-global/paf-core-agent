@@ -114,10 +114,24 @@ class OpenAIProvider(LLMProvider):
             
             content_buffer = ""
             total_tokens = 0
+            chunk_count = 0
             
             async for chunk in stream:
+                chunk_count += 1
+                
                 if chunk.choices and len(chunk.choices) > 0:
                     choice = chunk.choices[0]
+                    
+                    # Debug logging for completion detection
+                    if chunk_count > 50 and chunk_count % 10 == 0:  # Log every 10th chunk after 50
+                        self.logger.warning(
+                            f"OpenAI stream still running",
+                            request_id=request.request_id,
+                            chunk_count=chunk_count,
+                            finish_reason=choice.finish_reason,
+                            has_content=bool(choice.delta and choice.delta.content),
+                            content_length=len(content_buffer)
+                        )
                     
                     if choice.delta and choice.delta.content:
                         content = choice.delta.content
@@ -138,6 +152,14 @@ class OpenAIProvider(LLMProvider):
                     
                     # Handle completion
                     if choice.finish_reason:
+                        self.logger.info(
+                            "OpenAI stream finished",
+                            request_id=request.request_id,
+                            finish_reason=choice.finish_reason,
+                            chunk_count=chunk_count,
+                            content_length=len(content_buffer)
+                        )
+                        
                         # Check for usage information in the final chunk
                         if hasattr(chunk, 'usage') and chunk.usage:
                             total_tokens = chunk.usage.total_tokens
@@ -157,6 +179,92 @@ class OpenAIProvider(LLMProvider):
                             }
                         )
                         break
+                    
+                    # Smart completion detection - check for natural stopping points
+                    if chunk_count > 30:  # Start checking after 30 chunks
+                        should_complete = self._should_force_completion(
+                            content_buffer, chunk_count, choice.delta.content if choice.delta else ""
+                        )
+                        
+                        if should_complete:
+                            self.logger.info(
+                                "Natural completion point detected, forcing completion",
+                                request_id=request.request_id,
+                                chunk_count=chunk_count,
+                                content_length=len(content_buffer),
+                                detection_reason=should_complete
+                            )
+                            
+                            # Force completion at natural stopping point
+                            yield LLMResponse(
+                                content="",
+                                model=request.model,
+                                provider=self.provider_type.value,
+                                finish_reason="natural_completion",
+                                token_count=self._estimate_tokens(content_buffer),
+                                is_complete=True,
+                                metadata={
+                                    "openai_model": openai_model,
+                                    "request_id": request.request_id,
+                                    "total_content_length": len(content_buffer),
+                                    "forced_completion": True,
+                                    "detection_reason": should_complete,
+                                    "natural_completion": True
+                                }
+                            )
+                            break
+                    
+                    # Fallback safety limits
+                    elif chunk_count > 100:  # Reduced hard limit for quicker intervention
+                        self.logger.warning(
+                            "OpenAI stream exceeded safety limit, forcing completion",
+                            request_id=request.request_id,
+                            chunk_count=chunk_count,
+                            content_length=len(content_buffer),
+                            last_finish_reason=choice.finish_reason
+                        )
+                        
+                        # Force completion
+                        yield LLMResponse(
+                            content="",
+                            model=request.model,
+                            provider=self.provider_type.value,
+                            finish_reason="safety_limit",
+                            token_count=self._estimate_tokens(content_buffer),
+                            is_complete=True,
+                            metadata={
+                                "openai_model": openai_model,
+                                "request_id": request.request_id,
+                                "total_content_length": len(content_buffer),
+                                "forced_completion": True,
+                                "safety_triggered": True
+                            }
+                        )
+                        break
+            
+            # If we exit the loop without explicit completion, force it
+            if chunk_count > 0:
+                self.logger.warning(
+                    "OpenAI stream ended without explicit finish_reason",
+                    request_id=request.request_id,
+                    chunk_count=chunk_count,
+                    content_length=len(content_buffer)
+                )
+                
+                yield LLMResponse(
+                    content="",
+                    model=request.model,
+                    provider=self.provider_type.value,
+                    finish_reason="stream_ended",
+                    token_count=self._estimate_tokens(content_buffer),
+                    is_complete=True,
+                    metadata={
+                        "openai_model": openai_model,
+                        "request_id": request.request_id,
+                        "total_content_length": len(content_buffer),
+                        "implicit_completion": True
+                    }
+                )
         
         except openai.RateLimitError as e:
             self.logger.error(f"OpenAI rate limit exceeded: {e}")
@@ -268,4 +376,76 @@ class OpenAIProvider(LLMProvider):
                 **base_health,
                 "status": "unhealthy",
                 "error": str(e)
-            } 
+            }
+    
+    def _should_force_completion(self, content_buffer: str, chunk_count: int, latest_chunk: str) -> str:
+        """
+        Determine if we should force completion based on content analysis.
+        Returns reason string if completion should be forced, None otherwise.
+        """
+        
+        # Minimum content length before considering completion
+        if len(content_buffer) < 200:
+            return None
+        
+        # Check for natural ending patterns
+        content_lower = content_buffer.lower().strip()
+        
+        # Look for conclusion patterns
+        conclusion_patterns = [
+            "in conclusion",
+            "to summarize", 
+            "in summary",
+            "overall,",
+            "finally,",
+            "these recommendations should",
+            "implementing these",
+            "these insights will help",
+            "this analysis shows",
+            "next steps:"
+        ]
+        
+        for pattern in conclusion_patterns:
+            if pattern in content_lower[-200:]:  # Check last 200 chars
+                # If we've found a conclusion pattern and have substantial content
+                if len(content_buffer) > 500:
+                    return f"conclusion_pattern_{pattern.replace(' ', '_')}"
+        
+        # Check for numbered list completion (common in recommendations)
+        if content_buffer.count('\n') > 5:  # Multi-line content
+            lines = content_buffer.split('\n')
+            last_few_lines = ' '.join(lines[-3:]).lower()
+            
+            # Look for numbered list endings
+            if any(f"{i}." in content_buffer for i in range(1, 10)):  # Has numbered list
+                if any(ending in last_few_lines for ending in [
+                    "budget", "targeting", "optimization", "campaign", "performance",
+                    "recommendations", "strategy", "analysis", "insights"
+                ]):
+                    if len(content_buffer) > 800:  # Substantial content
+                        return "numbered_list_completion"
+        
+        # Check if response seems complete based on structure
+        if len(content_buffer) > 1000:  # Long enough response
+            # Count sentences (rough approximation)
+            sentence_count = content_buffer.count('.') + content_buffer.count('!') + content_buffer.count('?')
+            
+            # If we have many sentences and recent content suggests completion
+            if sentence_count > 8:
+                recent_content = content_buffer[-100:].lower()
+                completion_indicators = [
+                    "should help", "will improve", "these steps", "implementation",
+                    "success", "effective", "optimization", "performance"
+                ]
+                
+                if any(indicator in recent_content for indicator in completion_indicators):
+                    return "structural_completion"
+        
+        # Check for repetitive or low-quality generation
+        if chunk_count > 50:
+            recent_chunks = content_buffer[-200:]  # Last 200 chars
+            if len(set(recent_chunks.split())) < len(recent_chunks.split()) * 0.6:  # High repetition
+                return "repetitive_content"
+        
+        # Don't force completion yet
+        return None 

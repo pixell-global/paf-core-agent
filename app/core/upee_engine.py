@@ -46,6 +46,9 @@ class UPEEEngine:
         # Tracking
         self.current_request_id: Optional[str] = None
         self.phase_results: Dict[UPEEPhase, UPEEResult] = {}
+        self.retry_count: int = 0
+        self.max_retries: int = 3
+        self.retry_attempts: List[Dict[str, Any]] = []
     
     async def process_request(
         self, 
@@ -53,7 +56,7 @@ class UPEEEngine:
         request_id: str = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Process a chat request through the UPEE loop.
+        Process a chat request through the UPEE loop with retry mechanism.
         
         Args:
             request: The chat request to process
@@ -66,34 +69,24 @@ class UPEEEngine:
             request_id = str(uuid.uuid4())
         
         self.current_request_id = request_id
-        self.phase_results = {}
+        self.retry_count = 0
+        self.retry_attempts = []
         start_time = time.time()
         
         try:
             self.logger.info(
-                "Starting UPEE processing",
+                "Starting UPEE processing with retry support",
                 request_id=request_id,
                 message_preview=request.message[:100],
-                show_thinking=request.show_thinking
+                show_thinking=request.show_thinking,
+                max_retries=self.max_retries
             )
             
-            # Phase 1: Understand
-            async for event in self._run_understand_phase(request):
+            # Run UPEE loop with retry mechanism
+            async for event in self._run_upee_loop_with_retries(request):
                 yield event
             
-            # Phase 2: Plan
-            async for event in self._run_plan_phase(request):
-                yield event
-            
-            # Phase 3: Execute
-            async for event in self._run_execute_phase(request):
-                yield event
-            
-            # Phase 4: Evaluate
-            async for event in self._run_evaluate_phase(request):
-                yield event
-            
-            # Generate completion event
+            # Generate final completion event
             duration = time.time() - start_time
             completion_event = await self._create_completion_event(
                 request, duration
@@ -118,6 +111,160 @@ class UPEEEngine:
                 }
             }
             yield error_event
+    
+    async def _run_upee_loop_with_retries(
+        self, 
+        request: ChatRequest
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Run the UPEE loop with retry mechanism based on evaluation quality score.
+        
+        Args:
+            request: The chat request to process
+            
+        Yields:
+            Events (thinking, content, complete, error)
+        """
+        best_result_quality = 0.0
+        best_phase_results = None
+        
+        while self.retry_count <= self.max_retries:
+            attempt_start = time.time()
+            self.phase_results = {}
+            
+            # Show retry thinking event
+            if self.retry_count > 0 and request.show_thinking:
+                yield await self._create_thinking_event(
+                    UPEEPhase.EVALUATE,
+                    f"Starting retry attempt {self.retry_count}/{self.max_retries}. "
+                    f"Previous attempt quality: {self.retry_attempts[-1]['quality_score']:.3f}"
+                )
+            
+            try:
+                # Run single UPEE cycle
+                content_generated = False
+                stored_content_events = []
+                async for event in self._run_single_upee_cycle(request):
+                    if event.get("event") == EventType.CONTENT:
+                        # Store content events for potential retry, but also yield them for streaming
+                        stored_content_events.append(event)
+                        content_generated = True
+                        # For simple conversations, always yield content immediately for better UX
+                        yield event
+                    else:
+                        yield event
+                
+                # Check if this attempt meets quality threshold
+                evaluate_result = self.phase_results.get(UPEEPhase.EVALUATE)
+                if evaluate_result:
+                    quality_score = evaluate_result.metadata.get("quality_score", 0.0)
+                    needs_refinement = evaluate_result.metadata.get("needs_refinement", False)
+                    
+                    # Store this attempt
+                    attempt_data = {
+                        "attempt": self.retry_count + 1,
+                        "quality_score": quality_score,
+                        "needs_refinement": needs_refinement,
+                        "duration": time.time() - attempt_start,
+                        "phase_results": self.phase_results.copy()
+                    }
+                    self.retry_attempts.append(attempt_data)
+                    
+                    # Track best result
+                    if quality_score > best_result_quality:
+                        best_result_quality = quality_score
+                        best_phase_results = self.phase_results.copy()
+                    
+                    # Log attempt result
+                    self.logger.info(
+                        "UPEE attempt completed",
+                        request_id=self.current_request_id,
+                        attempt=self.retry_count + 1,
+                        quality_score=quality_score,
+                        needs_refinement=needs_refinement,
+                        will_retry=needs_refinement and self.retry_count < self.max_retries
+                    )
+                    
+                    # Check if we should retry
+                    if not needs_refinement or self.retry_count >= self.max_retries:
+                        # Use current results if quality is acceptable, or best results if max retries reached
+                        if needs_refinement and self.retry_count >= self.max_retries:
+                            self.phase_results = best_phase_results
+                            if request.show_thinking:
+                                yield await self._create_thinking_event(
+                                    UPEEPhase.EVALUATE,
+                                    f"Max retries reached. Using best attempt with quality: {best_result_quality:.3f}"
+                                )
+                        
+                        # Content already yielded during execution phase for better streaming UX
+                        
+                        return
+                    
+                    # Prepare for retry
+                    self.retry_count += 1
+                    if request.show_thinking:
+                        yield await self._create_thinking_event(
+                            UPEEPhase.EVALUATE,
+                            f"Quality score {quality_score:.3f} below threshold (0.5). "
+                            f"Preparing retry {self.retry_count}/{self.max_retries}"
+                        )
+                else:
+                    # No evaluation result - this shouldn't happen but handle gracefully
+                    self.logger.warning(
+                        "No evaluation result available",
+                        request_id=self.current_request_id,
+                        attempt=self.retry_count + 1
+                    )
+                    return
+                    
+            except Exception as e:
+                self.logger.error(
+                    "UPEE cycle failed",
+                    request_id=self.current_request_id,
+                    attempt=self.retry_count + 1,
+                    error=str(e)
+                )
+                
+                # If this is the last attempt, re-raise the exception
+                if self.retry_count >= self.max_retries:
+                    raise
+                
+                # Otherwise, try again
+                self.retry_count += 1
+                if request.show_thinking:
+                    yield await self._create_thinking_event(
+                        UPEEPhase.EVALUATE,
+                        f"Attempt {self.retry_count} failed with error: {str(e)}. Retrying..."
+                    )
+
+    async def _run_single_upee_cycle(
+        self, 
+        request: ChatRequest
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Run a single UPEE cycle (Understand → Plan → Execute → Evaluate).
+        
+        Args:
+            request: The chat request to process
+            
+        Yields:
+            Events (thinking, content, complete, error)
+        """
+        # Phase 1: Understand
+        async for event in self._run_understand_phase(request):
+            yield event
+        
+        # Phase 2: Plan
+        async for event in self._run_plan_phase(request):
+            yield event
+        
+        # Phase 3: Execute
+        async for event in self._run_execute_phase(request):
+            yield event
+        
+        # Phase 4: Evaluate
+        async for event in self._run_evaluate_phase(request):
+            yield event
     
     async def _run_understand_phase(
         self, 
@@ -345,7 +492,7 @@ class UPEEEngine:
         request: ChatRequest, 
         duration: float
     ) -> Dict[str, Any]:
-        """Create the final completion event."""
+        """Create the final completion event with retry information."""
         execute_result = self.phase_results.get(UPEEPhase.EXECUTE)
         evaluate_result = self.phase_results.get(UPEEPhase.EVALUATE)
         
@@ -353,19 +500,43 @@ class UPEEEngine:
         if execute_result:
             total_tokens = execute_result.metadata.get("tokens_generated", 0)
         
+        # Include retry information in completion data
+        retry_summary = {
+            "total_attempts": len(self.retry_attempts),
+            "final_quality_score": evaluate_result.metadata.get("quality_score", 0.0) if evaluate_result else 0.0,
+            "retry_triggered": len(self.retry_attempts) > 1,
+            "max_retries_reached": self.retry_count >= self.max_retries,
+            "attempt_scores": [attempt["quality_score"] for attempt in self.retry_attempts]
+        }
+        
         complete_data = CompleteEvent(
             total_tokens=total_tokens,
             duration=duration,
-                            model=execute_result.metadata.get("model_used", request.model or self.settings.resolved_default_model) if execute_result else (request.model or self.settings.resolved_default_model),
+            model=execute_result.metadata.get("model_used", request.model or self.settings.resolved_default_model) if execute_result else (request.model or self.settings.resolved_default_model),
             timestamp=time.time()
         )
         
-        return {
+        # Add retry information to the completion event
+        completion_event = {
             "event": EventType.COMPLETE,
             "data": complete_data.model_dump_json(),
-            "id": f"{self.current_request_id}-complete"
-        } 
-
+            "id": f"{self.current_request_id}-complete",
+            "retry_summary": retry_summary
+        }
+        
+        # Log retry summary
+        if len(self.retry_attempts) > 1:
+            self.logger.info(
+                "UPEE completed with retries",
+                request_id=self.current_request_id,
+                total_attempts=retry_summary["total_attempts"],
+                final_quality_score=retry_summary["final_quality_score"],
+                max_retries_reached=retry_summary["max_retries_reached"],
+                attempt_scores=retry_summary["attempt_scores"]
+            )
+        
+        return completion_event
+    
     def call_external_agent(self, message_type: str, payload: dict) -> dict:
         """외부 A2A 서버에 메시지를 보내고 응답을 반환합니다."""
         
@@ -392,4 +563,4 @@ class UPEEEngine:
             return response
         except Exception as e:
             self.logger.error(f"A2A call failed: {e}")
-            return {"status": "error", "error": str(e)} 
+            return {"status": "error", "error": str(e)}

@@ -28,6 +28,7 @@ class ServiceStatus(str, Enum):
     UNHEALTHY = "unhealthy"
     UNKNOWN = "unknown"
     DISCONNECTED = "disconnected"
+    BUSY = "busy"
 
 
 @dataclass

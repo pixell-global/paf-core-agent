@@ -1,112 +1,145 @@
-"""Main FastAPI application for PAF Core Agent."""
+"""
+Main FastAPI application with database initialization.
+"""
 
-import logging
+import os
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import chat, health, files, worker, auth
-from app.middleware.security import SecurityHeadersMiddleware, RateLimitMiddleware, AuditLoggingMiddleware, InputValidationMiddleware
-from app.utils.logging_config import setup_logging
-from app.settings import get_settings
-from app.grpc_clients.manager import GRPCClientManager
+# Import database components
+from app.db.database import init_db, test_connection, get_db
+from app.core.event_bus import event_bus
+from app.core.scheduler import job_scheduler
 
+# Import plugin components
+from app.plugins.registry import PluginRegistry
+from app.plugins.manager import PluginManager
+from app.plugins.examples import ExampleUPEEEnhancer, ExampleTextWorker
+
+# Import existing components
+from app.api.chat import router as chat_router
+from app.api.health import router as health_router
+from app.api.worker import router as worker_router
+from app.api.bridge import router as bridge_router
+from app.api.plugins import router as plugins_router
+from app.api.debug import router as debug_router
+from app.settings import Settings
+
+# Initialize settings
+settings = Settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
-    # Startup
-    settings = get_settings()
-    setup_logging()
-    logging.info("PAF Core Agent starting up...")
+    """Application lifespan handler."""
+    print("🚀 Starting PAF Core Agent...")
     
-    # Initialize gRPC client manager
-    grpc_manager = None
-    if settings.grpc_enabled:
-        try:
-            grpc_manager = GRPCClientManager(settings)
-            await grpc_manager.startup()
-            app.state.grpc_manager = grpc_manager
-            logging.info("gRPC client manager initialized successfully")
-        except Exception as e:
-            logging.error(f"Failed to initialize gRPC client manager: {e}")
-            # Continue without gRPC functionality
-            app.state.grpc_manager = None
-    else:
-        app.state.grpc_manager = None
-        logging.info("gRPC functionality disabled in settings")
+    # Test database connection
+    connection_ok = await test_connection()
+    if not connection_ok:
+        print("❌ Failed to connect to database. Please check your DATABASE_URL.")
+        exit(1)
+    
+    # Initialize database (create tables if they don't exist)
+    await init_db()
+    
+    # Start event bus
+    await event_bus.start_listener()
+    
+    # Start job scheduler
+    await job_scheduler.start()
+    
+    # Initialize plugin system
+    from app.api.plugins import get_registry, get_manager
+    plugin_registry = get_registry()
+    plugin_manager = get_manager()
+    
+    # Register example plugins
+    plugin_registry.register_plugin_class(ExampleUPEEEnhancer)
+    plugin_registry.register_plugin_class(ExampleTextWorker)
+    
+    print("✅ Database initialized successfully")
+    print("✅ Event bus started")
+    print("✅ Job scheduler started")
+    print("✅ Plugin system initialized")
+    print(f"✅ PAF Core Agent started on http://localhost:8000")
     
     yield
     
-    # Shutdown
-    logging.info("PAF Core Agent shutting down...")
+    print("🛑 Shutting down PAF Core Agent...")
     
-    # Shutdown gRPC client manager
-    if hasattr(app.state, 'grpc_manager') and app.state.grpc_manager:
-        try:
-            await app.state.grpc_manager.shutdown()
-            logging.info("gRPC client manager shutdown complete")
-        except Exception as e:
-            logging.error(f"Error during gRPC client manager shutdown: {e}")
-
-
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    settings = get_settings()
+    # Stop event bus
+    await event_bus.stop_listener()
     
-    app = FastAPI(
-        title="PAF Core Agent",
-        description="UPEE-based chat system with multi-provider LLM support",
-        version="0.1.0",
-        lifespan=lifespan,
-    )
-
-    # Add security middleware (order matters)
-    app.add_middleware(SecurityHeadersMiddleware)
-    app.add_middleware(InputValidationMiddleware)
-    app.add_middleware(AuditLoggingMiddleware)
-    app.add_middleware(RateLimitMiddleware, default_requests_per_minute=60, default_burst_limit=10)
+    # Stop job scheduler
+    await job_scheduler.stop()
     
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    print("✅ Event bus stopped")
+    print("✅ Job scheduler stopped")
 
-    # Include routers
-    app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
-    app.include_router(chat.router, prefix="/api/chat", tags=["chat", "a2a", "agent-discovery"])
-    app.include_router(health.router, prefix="/api", tags=["health"])
-    app.include_router(files.router, prefix="/api/files", tags=["files"])
-    app.include_router(worker.router, prefix="/api/worker", tags=["worker"])
+# Create FastAPI app with lifespan
+app = FastAPI(
+    title="PAF Core Agent",
+    description="Backend orchestrator for managing worker agents with UPEE loop",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
-    @app.exception_handler(Exception)
-    async def global_exception_handler(request, exc):
-        """Global exception handler."""
-        logging.error(f"Unhandled exception: {exc}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal server error"}
-        )
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if settings.debug else ["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    return app
+# Include routers
+app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
+app.include_router(health_router, prefix="/api/health", tags=["health"])
+app.include_router(worker_router, prefix="/api/workers", tags=["workers"])
+app.include_router(bridge_router, prefix="/api/bridge", tags=["bridge"])
+app.include_router(plugins_router, prefix="/api/plugins", tags=["plugins"])
+app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
 
+# Import and include jobs router
+from app.api.jobs import router as jobs_router
+app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
 
-app = create_app()
+@app.get("/")
+async def root():
+    """Root endpoint with basic information."""
+    return {
+        "name": "PAF Core Agent",
+        "version": "1.0.0",
+        "status": "running",
+        "docs": "/docs"
+    }
 
+@app.get("/api/db/test")
+async def test_db_connection(db: AsyncSession = Depends(get_db)):
+    """Test database connection endpoint."""
+    try:
+        from sqlalchemy import text
+        result = await db.execute(text("SELECT version()"))
+        version = result.scalar()
+        return {
+            "status": "connected",
+            "database": "PostgreSQL",
+            "version": version
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
-    settings = get_settings()
     uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-        log_level="info",
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True if os.getenv("DEBUG") == "true" else False
     ) 

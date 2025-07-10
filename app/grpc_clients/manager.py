@@ -253,6 +253,24 @@ class GRPCClientManager:
             name: info.health for name, info in self.service_info.items()
             if info.health is not None
         }
+
+    def get_service_health_non_blocking(self) -> Dict[str, ServiceHealth]:
+        """Get cached health status without triggering new checks (non-blocking)."""
+        current_time = time.time()
+        result = {}
+        
+        for name, info in self.service_info.items():
+            if info.health is not None:
+                result[name] = info.health
+            else:
+                # Provide default status for services without health info
+                result[name] = ServiceHealth(
+                    status=ServiceStatus.UNKNOWN,
+                    last_check=current_time,
+                    error="Health status not available"
+                )
+        
+        return result
     
     def is_service_healthy(self, service_name: str) -> bool:
         """Check if a specific service is healthy."""

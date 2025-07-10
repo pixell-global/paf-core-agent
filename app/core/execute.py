@@ -70,6 +70,14 @@ class ExecutePhase:
             # Build the prompt
             prompt = await self._build_prompt(request, understanding_result, plan_result)
             
+            # Debug: Log the exact prompt being sent to LLM
+            self.logger.info(
+                "LLM prompt built",
+                request_id=request_id,
+                prompt_length=len(prompt),
+                prompt_preview=prompt[:500] + "..." if len(prompt) > 500 else prompt
+            )
+            
             # Execute external calls if needed
             external_results = await self._execute_external_calls(
                 request, request_id, plan_meta
@@ -212,15 +220,32 @@ class ExecutePhase:
         # Add file context if provided
         if request.files:
             prompt_parts.append("Context files:")
-            for i, file_context in enumerate(request.files, 1):
-                file_content = file_context.content
+            for i, file_item in enumerate(request.files, 1):
+                # Handle both FileContent and FileContext schemas
+                if hasattr(file_item, 'file_name'):
+                    # New FileContent schema
+                    file_name = file_item.file_name
+                    file_content = file_item.content or ""
+                else:
+                    # Legacy FileContext schema
+                    file_name = getattr(file_item, 'path', f'file_{i}')
+                    file_content = getattr(file_item, 'content', "")
+                
+                # Get processed content from understanding phase if available
+                processed_files = understanding_meta.get("processed_files", [])
+                if i <= len(processed_files):
+                    processed_file = processed_files[i-1]
+                    if processed_file.get("processed") and processed_file.get("content"):
+                        # Use the processed content (from agentic workflow)
+                        file_content = processed_file["content"]
+                        file_name = processed_file.get("file_name", file_name)
                 
                 # Truncate if too long (simple implementation)
-                if len(file_content) > 2000:
+                if file_content and len(file_content) > 2000:
                     file_content = file_content[:2000] + "... [truncated]"
                 
-                prompt_parts.append(f"\n--- File {i}: {file_context.path} ---")
-                prompt_parts.append(file_content)
+                prompt_parts.append(f"\n--- File {i}: {file_name} ---")
+                prompt_parts.append(file_content or "[No content available]")
                 prompt_parts.append("--- End of file ---\n")
         
         # Add the main user message
@@ -430,10 +455,13 @@ class ExecutePhase:
             
             total_tokens = 0
             content_buffer = ""
+            last_provider = None
             
             # Stream from LLM provider
             async for llm_response in self.llm_manager.stream_completion(llm_request):
-                if llm_response.content and not llm_response.is_complete:
+                last_provider = llm_response.provider
+                
+                if llm_response.content:
                     # Stream content chunk
                     content_buffer += llm_response.content
                     
@@ -448,12 +476,12 @@ class ExecutePhase:
                         "id": f"{request_id}-content-{len(content_buffer)}"
                     }
                 
-                elif llm_response.is_complete:
-                    # Final response with token count
+                if llm_response.is_complete:
+                    # Explicit completion signal from LLM provider
                     total_tokens = llm_response.token_count or self._estimate_tokens(content_buffer)
                     
                     self.logger.info(
-                        "LLM streaming completed",
+                        "LLM streaming completed (explicit completion)",
                         request_id=request_id,
                         model=model,
                         total_tokens=total_tokens,
@@ -469,6 +497,26 @@ class ExecutePhase:
                         "finish_reason": llm_response.finish_reason
                     }
                     return
+            
+            # If we exit the async loop without explicit completion, handle implicit completion
+            total_tokens = self._estimate_tokens(content_buffer)
+            
+            self.logger.info(
+                "LLM streaming completed (implicit completion)",
+                request_id=request_id,
+                model=model,
+                total_tokens=total_tokens,
+                content_length=len(content_buffer),
+                provider=last_provider
+            )
+            
+            # Signal completion
+            yield {
+                "event": "execution_complete", 
+                "total_tokens": total_tokens,
+                "provider": last_provider,
+                "finish_reason": "stream_ended"
+            }
         
         except LLMProviderError as e:
             self.logger.error(

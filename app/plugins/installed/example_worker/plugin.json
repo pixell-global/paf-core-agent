@@ -1,0 +1,28 @@
+{
+  "id": "example-text-worker",
+  "name": "Example Text Worker",
+  "version": "1.0.0",
+  "plugin_type": "worker",
+  "description": "Example worker plugin for text processing tasks",
+  "author": "PAF Core Team",
+  "dependencies": [],
+  "required_capabilities": ["text_processing", "nlp"],
+  "configuration_schema": {
+    "type": "object",
+    "properties": {
+      "max_text_length": {
+        "type": "integer",
+        "default": 10000
+      },
+      "supported_languages": {
+        "type": "array",
+        "items": {"type": "string"},
+        "default": ["en", "es", "fr"]
+      }
+    }
+  },
+  "api_version": "1.0",
+  "min_core_version": "1.0.0",
+  "tags": ["worker", "text", "nlp", "example"],
+  "license": "MIT"
+}

@@ -179,12 +179,65 @@ async def stream_chat(
     
     # Validate file contexts if provided
     if chat_request.files:
-        for file_context in chat_request.files:
-            if not file_context.path or not file_context.content:
+        for i, file_item in enumerate(chat_request.files):
+            # Handle both legacy FileContext and new FileContent formats
+            if hasattr(file_item, 'path') and hasattr(file_item, 'content'):
+                # Legacy FileContext
+                if not file_item.path or not file_item.content:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File context {i} must have both path and content"
+                    )
+            elif hasattr(file_item, 'file_name'):
+                # New FileContent format
+                if not file_item.file_name:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File {i} must have a file_name"
+                    )
+                if not file_item.content and not file_item.signed_url:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File {i} must have either content or signed_url"
+                    )
+                # Validate file size
+                if file_item.file_size > 100 * 1024 * 1024:  # 100MB limit
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File {i} size ({file_item.file_size} bytes) exceeds 100MB limit"
+                    )
+            else:
                 raise HTTPException(
                     status_code=400, 
-                    detail="File context must have both path and content"
+                    detail=f"Invalid file format at index {i}"
                 )
+    
+    # Validate conversation history if provided
+    if chat_request.history:
+        if len(chat_request.history) > 50:
+            raise HTTPException(
+                status_code=400, 
+                detail="Conversation history cannot exceed 50 messages"
+            )
+        
+        for i, message in enumerate(chat_request.history):
+            if not message.role or message.role not in ['user', 'assistant', 'system']:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Message {i} must have a valid role (user, assistant, or system)"
+                )
+            if not message.content.strip():
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Message {i} cannot have empty content"
+                )
+    
+    # Validate memory limit
+    if chat_request.memory_limit and (chat_request.memory_limit < 1 or chat_request.memory_limit > 20):
+        raise HTTPException(
+            status_code=400, 
+            detail="Memory limit must be between 1 and 20 messages"
+        )
     
     # Validate model if specified
     if chat_request.model:
@@ -292,6 +345,9 @@ async def chat_status(
             "features": {
                 "thinking_events": True,
                 "file_context": True,
+                "signed_url_support": True,
+                "conversation_history": True,
+                "short_term_memory": True,
                 "multi_provider": True,
                 "external_calls": True,
                 "evaluation": True,
@@ -315,6 +371,9 @@ async def chat_status(
             "features": {
                 "thinking_events": True,
                 "file_context": True,
+                "signed_url_support": True,
+                "conversation_history": True,
+                "short_term_memory": True,
                 "multi_provider": False,
                 "external_calls": True,
                 "evaluation": True,

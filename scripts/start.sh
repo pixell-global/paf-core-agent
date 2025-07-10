@@ -4,11 +4,23 @@
 
 echo "Starting PAF Core Agent..."
 
-# Activate virtual environment if it exists
-if [ -d "venv" ]; then
-    echo "Activating virtual environment..."
-    source venv/bin/activate
-fi
+# Activate pyenv environment
+echo "Activating pyenv environment..."
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+pyenv activate paf-core
+
+# Check if dependencies are installed
+echo "Checking dependencies..."
+python -c "
+try:
+    import sqlalchemy, alembic, asyncpg, apscheduler, fastapi
+    print('✅ All dependencies are available')
+except ImportError as e:
+    print(f'❌ Missing dependency: {e}')
+    print('Please run: pip install -r requirements.txt')
+    exit(1)
+"
 
 # Install dependencies if requirements.txt is newer than last install
 if [ requirements.txt -nt .last_install ] || [ ! -f .last_install ]; then
