@@ -10,14 +10,14 @@ eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
 pyenv activate paf-core
 
-# Check if dependencies are installed
-echo "Checking dependencies..."
+# Check if core dependencies are installed
+echo "Checking core dependencies..."
 python -c "
 try:
-    import sqlalchemy, alembic, asyncpg, apscheduler, fastapi
-    print('✅ All dependencies are available')
+    import fastapi, uvicorn, pydantic, httpx, openai
+    print('✅ Core dependencies are available')
 except ImportError as e:
-    print(f'❌ Missing dependency: {e}')
+    print(f'❌ Missing core dependency: {e}')
     print('Please run: pip install -r requirements.txt')
     exit(1)
 "
