@@ -343,7 +343,7 @@ For questions and support:
 ## 🚀 Features Status
 
 ✅ **Core UPEE Loop** - Fully implemented with streaming support  
-✅ **Multi-Provider LLM** - OpenAI, Anthropic, AWS Bedrock support  
+✅ **Multi-Provider LLM** - OpenAI, Anthropic
 ✅ **File Processing** - Excel, CSV, and text file support with agentic processing  
 ✅ **Memory Support** - Short-term conversation history  
 ✅ **Streaming Chat** - Real-time Server-Sent Events  
