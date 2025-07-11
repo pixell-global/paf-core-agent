@@ -43,15 +43,8 @@ isort>=5.13.2
 flake8>=6.1.0
 mypy>=1.8.0
 
-# Database and ORM
-sqlalchemy>=2.0.25
-alembic>=1.13.1
-asyncpg>=0.29.0
-psycopg2-binary>=2.9.9
-greenlet>=3.0.0
-
-# Job scheduling and async tasks
-apscheduler>=3.10.4
+# Removed database dependencies - not needed for core functionality
+# Removed job scheduling - not needed for core functionality
 
 # Additional utilities
 click>=8.1.7

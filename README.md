@@ -6,17 +6,17 @@ A cloud-native Python microservice implementing the UPEE (Understand → Plan �
 
 ### Prerequisites
 - Python 3.11+
-- pip or Poetry
+- pip (or Poetry)
 
-### Installation
+### Installation & Setup
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/your-org/paf-core-agent.git
    cd paf-core-agent
    ```
 
-2. **Create virtual environment**
+2. **Create and activate virtual environment**
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -27,22 +27,74 @@ A cloud-native Python microservice implementing the UPEE (Understand → Plan �
    pip install -r requirements.txt
    ```
 
-4. **Set up environment**
+4. **Set up environment variables**
+   
+   Create a `.env` file in the root directory:
    ```bash
-   cp .env.example .env
-   # Edit .env with your API keys and configuration
+   # Required: At least one LLM provider API key
+   OPENAI_API_KEY=sk-your-openai-key-here
+   # ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+   # AWS_REGION=us-east-1  # For AWS Bedrock
+   
+   # Optional: Configuration
+   DEBUG=true
+   DEFAULT_MODEL=gpt-4o
+   MAX_CONTEXT_TOKENS=4000
    ```
 
-5. **Start the development server**
+5. **Install file processing dependencies (optional)**
+   ```bash
+   # For Excel/CSV file processing
+   pip install pandas openpyxl
+   
+   # For additional file types
+   pip install python-docx PyPDF2 pillow
+   ```
+
+6. **Start the development server**
    ```bash
    chmod +x scripts/start.sh
    ./scripts/start.sh
    ```
 
+   Or manually:
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+### 🎯 Quick Test
+
+Once the server is running, test it:
+
+```bash
+# Basic health check
+curl http://localhost:8000/api/health
+
+# Chat test
+curl -X POST http://localhost:8000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Hello! Can you help me analyze data?",
+    "show_thinking": true,
+    "model": "gpt-4o"
+  }'
+```
+
 The service will be available at:
 - **API**: http://localhost:8000
-- **Documentation**: http://localhost:8000/docs
+- **Interactive Documentation**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/api/health
+- **Debug Tools**: http://localhost:8000/api/debug/inspect-request
+
+### 📋 Minimum Requirements
+
+**Required:**
+- Python 3.11+
+- At least one LLM provider API key (OpenAI, Anthropic, or AWS Bedrock)
+
+**Optional:**
+- File processing libraries (pandas, openpyxl) for Excel/CSV support
+- Docker for containerized deployment
 
 ## 🏗️ Architecture
 
@@ -124,12 +176,12 @@ paf-core-agent/
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `OPENAI_API_KEY` | OpenAI API key | No | - |
-| `ANTHROPIC_API_KEY` | Anthropic API key | No | - |
+| `OPENAI_API_KEY` | OpenAI API key | At least one provider | - |
+| `ANTHROPIC_API_KEY` | Anthropic API key | At least one provider | - |
 | `AWS_REGION` | AWS region for Bedrock | No | us-east-1 |
 | `DEBUG` | Enable debug mode | No | false |
 | `MAX_CONTEXT_TOKENS` | Maximum context window | No | 4000 |
-| `DEFAULT_MODEL` | Default LLM model | No | gpt-3.5-turbo |
+| `DEFAULT_MODEL` | Default LLM model | No | gpt-4o |
 
 ### Running Tests
 ```bash
@@ -258,4 +310,14 @@ For questions and support:
 
 ---
 
-**Status**: 🚧 Under Development - Basic scaffold complete, implementing UPEE loop 
+## 🚀 Features Status
+
+✅ **Core UPEE Loop** - Fully implemented with streaming support  
+✅ **Multi-Provider LLM** - OpenAI, Anthropic, AWS Bedrock support  
+✅ **File Processing** - Excel, CSV, and text file support with agentic processing  
+✅ **Memory Support** - Short-term conversation history  
+✅ **Streaming Chat** - Real-time Server-Sent Events  
+✅ **Debug Tools** - Request inspection and troubleshooting endpoints  
+✅ **Health Monitoring** - Comprehensive health checks and metrics  
+
+**Status**: ✅ Production Ready - Core functionality complete 
