@@ -16,7 +16,7 @@ from app.core.evaluate import EvaluatePhase
 from app.utils.logging_config import get_logger, log_upee_phase
 from app.settings import Settings
 from app.utils.a2a_client import A2AClient
-
+from app.utils.a2a_util import run
 
 class UPEEEngine:
     """
@@ -375,14 +375,25 @@ class UPEEEngine:
             # 외부 A2A 서버 호출 필요 시 처리
             if plan_result and plan_result.metadata.get("needs_external_calls", False):
                 call_types = plan_result.metadata.get("external_call_types", [])
-                if call_types:
-                    # 첫 번째 call_type을 message_type으로 사용, request 전체를 payload로 전달
-                    a2a_response = self.call_external_agent(call_types[0], request.model_dump())
+                a2a_agent_match = plan_result.metadata.get("a2a_agent_match")
+                
+                if "a2a_agent" in call_types and a2a_agent_match and a2a_agent_match.get("matched"):
+                    # A2A 에이전트 호출
+                    a2a_response = await self.call_a2a_agent(request, a2a_agent_match)
+                    # A2A 결과를 웹 클라이언트가 동일한 포맷(ContentEvent JSON)으로 수신할 수 있도록 래핑
+                    import json
+
+                    a2a_content_event = ContentEvent(
+                        content=json.dumps(a2a_response, ensure_ascii=False),
+                        timestamp=time.time()
+                    )
+
                     yield {
                         "event": EventType.CONTENT,
-                        "data": str(a2a_response),
+                        "data": a2a_content_event.model_dump_json(),
                         "id": f"{self.current_request_id}-a2a-content"
                     }
+                    
             # 기존 Execute phase 처리
             async for event in self.execute_phase.process(
                 request,
@@ -396,20 +407,7 @@ class UPEEEngine:
                 # Store the final result
                 elif event.get("event") == "phase_complete":
                     self.phase_results[UPEEPhase.EXECUTE] = event["result"]
-            
-            duration = time.time() - phase_start
-            execute_result = self.phase_results.get(UPEEPhase.EXECUTE)
-            log_upee_phase(
-                "execute", 
-                self.current_request_id, 
-                "Phase completed successfully",
-                {
-                    "duration_ms": duration * 1000, 
-                    "tokens_generated": execute_result.metadata.get("tokens_generated", 0) if execute_result else 0,
-                    "model_used": execute_result.metadata.get("model_used", "unknown") if execute_result else "unknown"
-                }
-            )
-            
+                    
         except Exception as e:
             self.logger.error(
                 "Execute phase failed",
@@ -426,9 +424,10 @@ class UPEEEngine:
         phase_start = time.time()
         
         if request.show_thinking:
+            execute_result = self.phase_results.get(UPEEPhase.EXECUTE)
             yield await self._create_thinking_event(
                 UPEEPhase.EVALUATE,
-                "Evaluating response quality and completeness"
+                f"Evaluating response quality. Content length: {len(execute_result.content) if execute_result else 0} chars"
             )
         
         try:
@@ -446,19 +445,13 @@ class UPEEEngine:
                 "evaluate", 
                 self.current_request_id, 
                 "Phase completed successfully",
-                {
-                    "duration_ms": duration * 1000, 
-                    "quality_score": result.metadata.get("quality_score", 0.0),
-                    "needs_refinement": result.metadata.get("needs_refinement", False)
-                }
+                {"duration_ms": duration * 1000, "quality_score": result.metadata.get("quality_score", 0.0)}
             )
             
             if request.show_thinking:
-                quality_score = result.metadata.get("quality_score", 0.0)
                 yield await self._create_thinking_event(
                     UPEEPhase.EVALUATE,
-                    f"Evaluation complete. Quality score: {quality_score:.2f}. "
-                    f"Response approved: {not result.metadata.get('needs_refinement', False)}"
+                    f"Evaluation complete. Quality score: {result.metadata.get('quality_score', 0.0):.2f}"
                 )
                 
         except Exception as e:
@@ -472,18 +465,18 @@ class UPEEEngine:
     async def _create_thinking_event(
         self, 
         phase: UPEEPhase, 
-        content: str
+        message: str
     ) -> Dict[str, Any]:
-        """Create a thinking event for the given phase."""
-        thinking_data = ThinkingEvent(
-            phase=phase.value,
-            content=content,
+        """Create a thinking event for streaming."""
+        thinking_event = ThinkingEvent(
+            phase=phase.value,  # phase.value로 문자열 변환
+            content=message,    # message -> content 필드명 수정
             timestamp=time.time()
         )
         
         return {
             "event": EventType.THINKING,
-            "data": thinking_data.model_dump_json(),
+            "data": thinking_event.model_dump_json(),
             "id": f"{self.current_request_id}-thinking-{phase.value}"
         }
     
@@ -492,27 +485,24 @@ class UPEEEngine:
         request: ChatRequest, 
         duration: float
     ) -> Dict[str, Any]:
-        """Create the final completion event with retry information."""
+        """Create completion event with result summary."""
+        
+        # Extract key metrics from phase results
         execute_result = self.phase_results.get(UPEEPhase.EXECUTE)
         evaluate_result = self.phase_results.get(UPEEPhase.EVALUATE)
         
-        total_tokens = 0
-        if execute_result:
-            total_tokens = execute_result.metadata.get("tokens_generated", 0)
-        
-        # Include retry information in completion data
+        # Build retry summary
         retry_summary = {
-            "total_attempts": len(self.retry_attempts),
-            "final_quality_score": evaluate_result.metadata.get("quality_score", 0.0) if evaluate_result else 0.0,
-            "retry_triggered": len(self.retry_attempts) > 1,
+            "total_attempts": len(self.retry_attempts) + 1,
             "max_retries_reached": self.retry_count >= self.max_retries,
-            "attempt_scores": [attempt["quality_score"] for attempt in self.retry_attempts]
+            "final_quality_score": evaluate_result.metadata.get("quality_score", 0.0) if evaluate_result else 0.0,
+            "attempt_scores": [attempt.get("quality_score", 0.0) for attempt in self.retry_attempts]
         }
         
         complete_data = CompleteEvent(
-            total_tokens=total_tokens,
+            total_tokens=execute_result.metadata.get("tokens_used", 0) if execute_result else 0,
             duration=duration,
-            model=execute_result.metadata.get("model_used", request.model or self.settings.resolved_default_model) if execute_result else (request.model or self.settings.resolved_default_model),
+            model=self.phase_results.get(UPEEPhase.PLAN, UPEEResult(phase=UPEEPhase.PLAN, content="", metadata={})).metadata.get("model_recommendation", "unknown"),
             timestamp=time.time()
         )
         
@@ -536,6 +526,114 @@ class UPEEEngine:
             )
         
         return completion_event
+    
+    async def call_a2a_agent(self, request: ChatRequest, a2a_agent_match: Dict[str, Any]) -> Dict[str, Any]:
+        """A2A 에이전트를 스킬 정보와 함께 호출합니다."""
+        
+        if not self.settings.a2a_enabled:
+            self.logger.info("A2A functionality is disabled")
+            return {"status": "disabled", "message": "A2A functionality is disabled"}
+        
+        skill_data = a2a_agent_match.get("skill_data", {})
+        skill_name = a2a_agent_match.get("skill_name", "")
+        skill_id = a2a_agent_match.get("skill_id", "")
+        
+        # 스킬 정보에서 파라미터 추출
+        skill_description = skill_data.get("description", "")
+        
+        # 사용자 메시지에서 파라미터 추출 (간단한 예시)
+        parameters = self._extract_parameters_from_message(request.message, skill_description)
+        
+        # 메시지를 보낼 대상 에이전트 URL 결정 (skill 이 정의된 카드 URL 우선)
+        agent_url = a2a_agent_match.get("agent_url")
+
+        # 에이전트 URL 이 settings 와 다르면 임시 클라이언트 이용
+        target_client = self.a2a_client
+        if agent_url and agent_url.strip() and agent_url.rstrip('/') != self.settings.a2a_server_url.rstrip('/'):
+            from app.utils.a2a_client import A2AClient
+            target_client = A2AClient(agent_url, self.settings.a2a_timeout)
+
+        # A2A 메시지 구성
+        message = {
+            "type": "skill_request",
+            "skill_id": skill_id,
+            "skill_name": skill_name,
+            "parameters": parameters,
+            "user_message": request.message,
+            "payload": {
+                "message": request.message,
+                "skill_request": {
+                    "skill_id": skill_id,
+                    "skill_name": skill_name,
+                    "parameters": parameters
+                }
+            }
+        }
+        
+        if agent_url:
+            message["url"] = agent_url
+        elif self.settings.a2a_server_url:
+            message["url"] = self.settings.a2a_server_url
+        
+        try:
+            response = await run(self, parameters.get("user_id"),
+                                skill_id,
+                                parameters.get("name"),
+                                agent_url)
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"A2A agent call failed: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    def _extract_parameters_from_message(self, message: str, skill_description: str) -> Dict[str, Any]:
+        """사용자 메시지에서 스킬 파라미터를 추출합니다."""
+        import re
+        
+        parameters = {}
+        message_lower = message.lower()
+        
+        # 스킬 설명에서 파라미터 정보 추출
+        # 예: "create new productparameters: user_id[str]-user id, name[str]-product name, description[str]-product description"
+        if "parameters:" in skill_description:
+            param_section = skill_description.split("parameters:")[1].strip()
+            param_matches = re.findall(r'(\w+)\[(\w+)\]', param_section)
+            
+            for param_name, param_type in param_matches:
+                # 메시지에서 파라미터 값 추출
+                if param_name == "user_id":
+                    # "userid: 1" 패턴 찾기
+                    user_id_match = re.search(r'userid?\s*:\s*(\d+)', message_lower)
+                    if user_id_match:
+                        parameters["user_id"] = user_id_match.group(1)
+                
+                elif param_name == "name":
+                    # "제품명:test22" 패턴 찾기
+                    name_match = re.search(r'제품명?\s*:\s*([^,\s]+)', message_lower)
+                    if name_match:
+                        parameters["name"] = name_match.group(1)
+                
+                elif param_name == "description":
+                    # "제품셜명: 굿!!" 패턴 찾기
+                    desc_match = re.search(r'제품?설명?\s*:\s*([^,]+)', message_lower)
+                    if desc_match:
+                        parameters["description"] = desc_match.group(1).strip()
+        
+        # 기본값 설정
+        if not parameters.get("user_id"):
+            # userid가 없으면 기본값 설정
+            user_id_match = re.search(r'userid?\s*:\s*(\d+)', message_lower)
+            if user_id_match:
+                parameters["user_id"] = user_id_match.group(1)
+        
+        self.logger.info(
+            "Extracted parameters from message",
+            parameters=parameters,
+            message_preview=message[:100]
+        )
+        
+        return parameters
     
     def call_external_agent(self, message_type: str, payload: dict) -> dict:
         """외부 A2A 서버에 메시지를 보내고 응답을 반환합니다."""

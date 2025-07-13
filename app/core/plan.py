@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase
 from app.settings import Settings
 from app.utils.logging_config import get_logger
+from app.utils.a2a_client import A2AClient
 
 
 class PlanPhase:
@@ -22,7 +23,9 @@ class PlanPhase:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.logger = get_logger("plan_phase")
-    
+        # A2A 클라이언트 초기화
+        self.a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout) if settings.a2a_enabled else None
+
     async def process(
         self, 
         request: ChatRequest, 
@@ -56,7 +59,7 @@ class PlanPhase:
             # Plan model selection
             model_plan = await self._plan_model_selection(request, understanding_meta, strategy)
             
-            # Plan external calls
+            # Plan external calls (including A2A agents)
             external_calls_plan = await self._plan_external_calls(request, understanding_meta, strategy)
             
             # Plan file processing approach
@@ -84,6 +87,7 @@ class PlanPhase:
                 "model_recommendation": model_plan["recommended_model"],
                 "needs_external_calls": external_calls_plan["needs_calls"],
                 "external_call_types": external_calls_plan["call_types"],
+                "a2a_agent_match": external_calls_plan.get("a2a_agent_match"),
                 "file_processing": file_processing_plan,
                 "memory_usage": memory_plan,
                 "response_structure": structure_plan["type"],
@@ -105,7 +109,8 @@ class PlanPhase:
                 request_id=request_id,
                 strategy=metadata["strategy"],
                 model=metadata["model_recommendation"],
-                needs_external_calls=metadata["needs_external_calls"]
+                needs_external_calls=metadata["needs_external_calls"],
+                a2a_agent_match=metadata.get("a2a_agent_match", {}).get("matched", False)
             )
             
             return result
@@ -125,7 +130,7 @@ class PlanPhase:
                 completed=False,
                 error=str(e)
             )
-    
+
     async def _determine_strategy(
         self, 
         request: ChatRequest, 
@@ -188,7 +193,7 @@ class PlanPhase:
                 base_strategy["complexity"] = "moderate" if base_strategy["complexity"] == "simple" else "complex"
         
         return base_strategy
-    
+
     async def _plan_model_selection(
         self, 
         request: ChatRequest, 
@@ -234,14 +239,14 @@ class PlanPhase:
             "reason": reason,
             "confidence": confidence
         }
-    
+
     async def _plan_external_calls(
         self, 
         request: ChatRequest, 
         understanding_meta: Dict[str, Any],
         strategy: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Plan external API calls (gRPC worker agents)."""
+        """Plan external API calls (gRPC worker agents and A2A agents)."""
         
         intent = understanding_meta.get("intent", "general")
         complexity = strategy["complexity"]
@@ -250,6 +255,19 @@ class PlanPhase:
         
         needs_calls = False
         call_types = []
+        a2a_agent_match = None
+        
+        # Check for A2A agent match first
+        if self.settings.a2a_enabled and self.a2a_client:
+            a2a_agent_match = await self._check_a2a_agent_match(request)
+            if a2a_agent_match and a2a_agent_match.get("matched"):
+                needs_calls = True
+                call_types.append("a2a_agent")
+                self.logger.info(
+                    "A2A agent match found",
+                    skill_name=a2a_agent_match.get("skill_name"),
+                    agent_name=a2a_agent_match.get("agent_name")
+                )
         
         # Check for specific keywords that indicate external processing needs
         message_lower = request.message.lower()
@@ -298,17 +316,96 @@ class PlanPhase:
         return {
             "needs_calls": needs_calls,
             "call_types": call_types,
+            "a2a_agent_match": a2a_agent_match,
             "estimated_calls": len(call_types),
             "parallel_execution": len(call_types) > 1,
-            "reasoning": self._get_external_call_reasoning(call_types, intent, complexity, file_count)
+            "reasoning": self._get_external_call_reasoning(call_types, intent, complexity, file_count, a2a_agent_match)
         }
-    
+
+    async def _check_a2a_agent_match(self, request: ChatRequest) -> Optional[Dict[str, Any]]:
+        """Check if user request matches any A2A agent skills."""
+        try:
+            # A2A 에이전트 카드 가져오기
+            agent_card = await self.a2a_client.get_agent_card()
+            if not agent_card:
+                return None
+            
+            skills = agent_card.get("skills", [])
+            if not skills:
+                return None
+            
+            user_message = request.message.lower()
+            
+            # 각 스킬에 대해 매칭 확인
+            for skill in skills:
+                skill_name = skill.get("name", "")
+                skill_description = skill.get("description", "")
+                skill_id = skill.get("id", "")
+                
+                # 키워드 기반 매칭
+                if self._is_skill_match(user_message, skill_name, skill_description):
+                    self.logger.info(
+                        "A2A agent skill match found",
+                        skill_name=skill_name,
+                        skill_id=skill_id,
+                        agent_name=agent_card.get("name", "Unknown")
+                    )
+                    
+                    return {
+                        "matched": True,
+                        "skill_name": skill_name,
+                        "skill_id": skill_id,
+                        "skill_description": skill_description,
+                        "agent_name": agent_card.get("name", "Unknown"),
+                        "agent_url": agent_card.get("url", ""),
+                        "skill_data": skill
+                    }
+            
+            return {"matched": False}
+            
+        except Exception as e:
+            self.logger.error(f"Error checking A2A agent match: {e}")
+            return None
+
+    def _is_skill_match(self, user_message: str, skill_name: str, skill_description: str) -> bool:
+        """Check if user message matches a specific skill."""
+        # 스킬 이름 및 설명에서 키워드 추출
+        skill_keywords = []
+        
+        # 스킬 이름에서 키워드 추출
+        if skill_name:
+            skill_keywords.extend(skill_name.lower().split('_'))
+            skill_keywords.extend(skill_name.lower().split())
+        
+        # 스킬 설명에서 키워드 추출
+        if skill_description:
+            # "create new product" -> ["create", "new", "product"]
+            desc_words = skill_description.lower().split()
+            skill_keywords.extend(desc_words)
+        
+        # 사용자 메시지와 매칭
+        for keyword in skill_keywords:
+            if len(keyword) > 2 and keyword in user_message:  # 2글자 이상 키워드만 확인
+                return True
+        
+        # 특정 패턴 매칭
+        if "create" in skill_name.lower() or "create" in skill_description.lower():
+            if any(word in user_message for word in ["만들어", "생성", "create", "add", "추가"]):
+                return True
+        
+        if "product" in skill_name.lower() or "product" in skill_description.lower():
+            if any(word in user_message for word in ["제품", "product", "상품"]):
+                return True
+        
+        return False
+
     def _get_external_call_reasoning(
         self, 
         call_types: list, 
         intent: str, 
         complexity: str, 
-        file_count: int
+        file_count: int,
+        a2a_agent_match: Optional[Dict[str, Any]] = None
     ) -> str:
         """Generate reasoning for external call decisions."""
         if not call_types:
@@ -317,7 +414,12 @@ class PlanPhase:
         reasons = []
         
         for call_type in call_types:
-            if call_type == "code_analysis":
+            if call_type == "a2a_agent":
+                if a2a_agent_match and a2a_agent_match.get("matched"):
+                    skill_name = a2a_agent_match.get("skill_name", "unknown")
+                    agent_name = a2a_agent_match.get("agent_name", "unknown")
+                    reasons.append(f"A2A agent '{agent_name}' skill '{skill_name}' matches user request")
+            elif call_type == "code_analysis":
                 reasons.append("specialized code analysis required")
             elif call_type == "file_processing":
                 reasons.append(f"processing {file_count} files efficiently")
@@ -329,7 +431,7 @@ class PlanPhase:
                 reasons.append("complex task benefits from distributed processing")
         
         return f"External calls planned: {', '.join(reasons)}"
-    
+
     async def _plan_file_processing(
         self, 
         request: ChatRequest, 
@@ -380,14 +482,14 @@ class PlanPhase:
             "files_with_signed_urls": files_with_signed_urls,
             "total_size": total_file_size
         }
-    
+
     async def _plan_memory_usage(
         self, 
         request: ChatRequest, 
         understanding_meta: Dict[str, Any],
         strategy: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Plan how to use conversation history (short-term memory)."""
+        """Plan how to use conversation history and memory."""
         
         history_info = understanding_meta.get("conversation_history", {})
         message_count = history_info.get("message_count", 0)
@@ -395,43 +497,32 @@ class PlanPhase:
         if message_count == 0:
             return {
                 "approach": "no_history",
-                "strategy": "fresh_context",
-                "context_inclusion": "none"
+                "strategy": "fresh_conversation",
+                "context_window": 0
             }
         
-        history_tokens = history_info.get("total_tokens_estimate", 0)
-        was_truncated = history_info.get("history_truncated", False)
-        files_in_history = history_info.get("files_in_history", 0)
-        
-        # Determine memory approach
-        if history_tokens > 2000:
-            approach = "selective_memory"
-            strategy = "recent_focus"
-        elif message_count > 8:
-            approach = "contextual_memory"
-            strategy = "relevant_extraction"
-        else:
-            approach = "full_memory"
+        # Determine memory strategy based on history length
+        if message_count <= 5:
+            approach = "full_history"
             strategy = "complete_context"
-        
-        # Determine context inclusion
-        if was_truncated:
-            context_inclusion = "truncated_with_summary"
-        elif files_in_history > 0:
-            context_inclusion = "history_with_file_refs"
+            context_window = message_count
+        elif message_count <= 20:
+            approach = "windowed_history"
+            strategy = "recent_focus"
+            context_window = min(10, message_count)
         else:
-            context_inclusion = "full_history"
+            approach = "summarized_history"
+            strategy = "key_points_only"
+            context_window = 15
         
         return {
             "approach": approach,
             "strategy": strategy,
-            "context_inclusion": context_inclusion,
+            "context_window": context_window,
             "message_count": message_count,
-            "history_tokens": history_tokens,
-            "was_truncated": was_truncated,
-            "files_in_history": files_in_history
+            "memory_limit": getattr(request, 'memory_limit', None)
         }
-    
+
     async def _plan_response_structure(
         self, 
         request: ChatRequest, 
@@ -472,7 +563,7 @@ class PlanPhase:
             "sections": sections,
             "estimated_length": self._estimate_response_length(intent, approach, file_count)
         }
-    
+
     async def _plan_execution_parameters(
         self, 
         request: ChatRequest, 
@@ -522,67 +613,59 @@ class PlanPhase:
             "streaming_recommended": True,  # Always recommend streaming for chat
             "stop_sequences": []
         }
-    
-    def _estimate_response_length(
-        self, 
-        intent: str, 
-        approach: str, 
-        file_count: int
-    ) -> str:
-        """Estimate response length category."""
+
+    def _estimate_output_tokens(self, intent: str, complexity: str, understanding_meta: Dict[str, Any]) -> int:
+        """Estimate output tokens based on intent and complexity."""
         
-        base_length = {
-            "conversation": "short",
-            "question": "medium",
-            "request": "medium",
-            "task": "long",
-            "analysis": "long"
+        # Base estimates
+        base_estimates = {
+            "conversation": 300,
+            "question": 500,
+            "request": 400,
+            "task": 800,
+            "analysis": 1000
         }
         
-        length = base_length.get(intent, "medium")
-        
-        # Adjust for file context
-        if file_count > 0:
-            if length == "short":
-                length = "medium"
-            elif length == "medium":
-                length = "long"
-        
-        return length
-    
-    def _estimate_output_tokens(
-        self, 
-        intent: str, 
-        complexity: str, 
-        understanding_meta: Dict[str, Any]
-    ) -> int:
-        """Estimate number of output tokens needed."""
-        
-        base_tokens = {
-            "conversation": 3000,     # Increased from 50
-            "question": 8000,         # Increased from 200
-            "request": 10000,         # Increased from 300
-            "task": 15000,            # Increased from 500
-            "analysis": 20000         # Increased from 600
-        }
-        
-        tokens = base_tokens.get(intent, 8000)  # Better default
+        base_tokens = base_estimates.get(intent, 500)
         
         # Adjust for complexity
-        complexity_multiplier = {
+        complexity_multipliers = {
             "simple": 1.0,
             "moderate": 1.5,
-            "complex": 2.5  # Increased from 2.0
+            "complex": 2.0
         }
-        tokens = int(tokens * complexity_multiplier.get(complexity, 1.0))
+        
+        complexity_multiplier = complexity_multipliers.get(complexity, 1.0)
         
         # Adjust for file context
         file_count = understanding_meta.get("file_count", 0)
         if file_count > 0:
-            tokens += file_count * 200  # Increased from 100 tokens per file
+            base_tokens += file_count * 200  # 200 tokens per file for context discussion
         
-        return tokens
-    
+        # Adjust for conversation history
+        history_length = understanding_meta.get("conversation_history", {}).get("message_count", 0)
+        if history_length > 0:
+            base_tokens += min(history_length * 50, 300)  # Up to 300 tokens for history context
+        
+        estimated_tokens = int(base_tokens * complexity_multiplier)
+        
+        # Ensure minimum and maximum bounds
+        return max(200, min(estimated_tokens, 10000))
+
+    def _estimate_response_length(self, intent: str, approach: str, file_count: int) -> str:
+        """Estimate response length category."""
+        
+        if intent == "conversation":
+            return "short"
+        elif intent == "question":
+            return "medium"
+        elif intent == "task":
+            return "long"
+        elif intent == "analysis":
+            return "very_long" if file_count > 0 else "long"
+        else:
+            return "medium"
+
     def _build_plan_summary(
         self,
         strategy: Dict[str, Any],
@@ -610,7 +693,17 @@ class PlanPhase:
             summary_parts.append(f"Memory: {memory_plan['approach']} ({memory_plan['message_count']} msgs)")
         
         if external_calls_plan["needs_calls"]:
-            summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
+            call_types = external_calls_plan['call_types']
+            # A2A 에이전트 정보 포함
+            if "a2a_agent" in call_types:
+                a2a_match = external_calls_plan.get("a2a_agent_match", {})
+                if a2a_match and a2a_match.get("matched"):
+                    skill_name = a2a_match.get("skill_name", "unknown")
+                    summary_parts.append(f"External calls: A2A agent skill '{skill_name}'")
+                else:
+                    summary_parts.append(f"External calls: {', '.join(call_types)}")
+            else:
+                summary_parts.append(f"External calls: {', '.join(call_types)}")
         
         summary_parts.append(f"Est. tokens: {execution_params['estimated_output_tokens']}")
         
