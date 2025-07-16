@@ -1,0 +1,11 @@
+[flake8]
+max-line-length = 100
+max-complexity = 10
+count = True
+show-source = True
+statistics = True
+# Select critical errors and warnings
+select = E9,F63,F7,F82,E7,W6
+# Extend to include common style violations
+extend-select = E,W,F
+
