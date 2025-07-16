@@ -14,8 +14,9 @@ aiofiles>=23.0.0
 # LLM Provider SDKs
 openai>=1.0.0
 anthropic>=0.7.0
-boto3>=1.30.0
-aioboto3>=12.0.0
+boto3==1.38.27
+aioboto3==15.0.0
+jmespath==1.0.1
 
 # gRPC support
 grpcio>=1.50.0
