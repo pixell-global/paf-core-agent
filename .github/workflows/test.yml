@@ -1,14 +1,36 @@
 name: test_no_db
 
 on:
+  push:
+    branches: [main, 'fix-*', 'feature-*']
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    
+    # Add timeout to prevent hanging jobs
+    timeout-minutes: 15
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        # For pull_request_target, checkout the PR head instead of base
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        # Fetch full history for better caching
+        fetch-depth: 0
+    
+    - name: Debug workflow info
+      run: |
+        echo "Event name: ${{ github.event_name }}"
+        echo "PR number: ${{ github.event.pull_request.number }}"
+        echo "Head ref: ${{ github.head_ref }}"
+        echo "Base ref: ${{ github.base_ref }}"
+        echo "Repository: ${{ github.repository }}"
     
     - name: Set up Python
       uses: actions/setup-python@v4

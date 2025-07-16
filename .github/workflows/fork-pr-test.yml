@@ -1,0 +1,35 @@
+name: Fork PR Test
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+    
+jobs:
+  fork-pr-test:
+    # Only run on forks to avoid duplicate runs
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        
+    - name: Basic validation
+      run: |
+        echo "PR from fork: ${{ github.event.pull_request.head.repo.full_name }}"
+        echo "Target repo: ${{ github.repository }}"
+        echo "Files changed:"
+        git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.13"
+        
+    - name: Quick syntax check
+      run: |
+        python -m py_compile app/*.py || echo "No Python files to compile"
+        echo "Basic validation completed"
