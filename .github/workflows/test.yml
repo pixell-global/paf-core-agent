@@ -57,8 +57,7 @@ jobs:
 
       - name: Run linting
         run: |
-          flake8 app/ --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 app/ --count --max-complexity=10 --max-line-length=100 --statistics
+          flake8 app/
         continue-on-error: true
 
       - name: Run type checking
