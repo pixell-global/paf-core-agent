@@ -1,53 +1,50 @@
 # Core FastAPI and ASGI
-fastapi>=0.111.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.7
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+python-multipart>=0.0.5
 
 # Pydantic for data validation
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
 
 # HTTP client and async support
-httpx>=0.25.2
-aiofiles>=23.2.1
+httpx>=0.24.0
+aiofiles>=23.0.0
 
 # LLM Provider SDKs
-openai>=1.6.1
-anthropic>=0.8.1
-boto3>=1.34.0
-aioboto3>=12.1.0
+openai>=1.0.0
+anthropic>=0.7.0
+boto3>=1.30.0
+aioboto3>=12.0.0
 
 # gRPC support
-grpcio>=1.60.0
-grpcio-tools>=1.60.0
-protobuf>=4.25.1
+grpcio>=1.50.0
+grpcio-tools>=1.50.0
+protobuf>=4.20.0
 
 # Authentication and security
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
-cryptography>=41.0.0
-pyjwt>=2.8.0
-email-validator>=2.1.0
+python-jose[cryptography]>=3.0.0
+passlib[bcrypt]>=1.7.0
+cryptography>=40.0.0
+pyjwt>=2.0.0
+email-validator>=2.0.0
 
 # Monitoring and observability
-prometheus-client>=0.19.0
-structlog>=23.2.0
-aws-xray-sdk>=2.12.1
+prometheus-client>=0.15.0
+structlog>=23.0.0
+aws-xray-sdk>=2.10.0
 
 # Development and testing
-pytest>=7.4.3
-pytest-asyncio>=0.21.1
-pytest-cov>=4.1.0
-black>=23.12.0
-isort>=5.13.2
-flake8>=6.1.0
-mypy>=1.8.0
-
-# Removed database dependencies - not needed for core functionality
-# Removed job scheduling - not needed for core functionality
+pytest>=7.0.0
+pytest-asyncio>=0.20.0
+pytest-cov>=4.0.0
+black>=23.0.0
+isort>=5.10.0
+flake8>=6.0.0
+mypy>=1.0.0
 
 # Additional utilities
-click>=8.1.7
+click>=8.0.0
 python-dotenv>=1.0.0
-tenacity>=8.2.3
-tiktoken>=0.5.2 
+tenacity>=8.0.0
+tiktoken>=0.5.0
