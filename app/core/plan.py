@@ -27,7 +27,8 @@ class PlanPhase:
         self, 
         request: ChatRequest, 
         request_id: str,
-        understanding_result: Optional[UPEEResult] = None
+        understanding_result: Optional[UPEEResult] = None,
+        agent_enhancement: Optional[Dict[str, Any]] = None
     ) -> UPEEResult:
         """
         Process the planning phase.

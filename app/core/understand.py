@@ -31,7 +31,8 @@ class UnderstandPhase:
     async def process(
         self, 
         request: ChatRequest, 
-        request_id: str
+        request_id: str,
+        agent_enhancement: Optional[Dict[str, Any]] = None
     ) -> UPEEResult:
         """
         Process the understanding phase.
