@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.api.debug import router as debug_router
+from app.api.agents import router as agents_router
 from app.settings import Settings
 
 # Initialize settings
@@ -53,6 +54,7 @@ app.add_middleware(
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(health_router, prefix="/api/health", tags=["health"])
 app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
+app.include_router(agents_router)
 
 @app.get("/")
 async def root():

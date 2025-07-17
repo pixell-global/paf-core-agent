@@ -13,6 +13,7 @@ from app.core.understand import UnderstandPhase
 from app.core.plan import PlanPhase
 from app.core.execute import ExecutePhase
 from app.core.evaluate import EvaluatePhase
+from app.agents.manager import AgentManager
 from app.utils.logging_config import get_logger, log_upee_phase
 from app.settings import Settings
 from app.utils.a2a_client import A2AClient
@@ -34,8 +35,8 @@ class UPEEEngine:
         self.logger = get_logger("upee_engine")
         self.grpc_manager = grpc_manager
         
-        # A2AClient 초기화
-        self.a2a_client = a2a_client or A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        # Initialize agent manager
+        self.agent_manager = AgentManager(settings)
         
         # Initialize phases
         self.understand_phase = UnderstandPhase(settings)
@@ -49,6 +50,21 @@ class UPEEEngine:
         self.retry_count: int = 0
         self.max_retries: int = 3
         self.retry_attempts: List[Dict[str, Any]] = []
+        self._agent_manager_started = False
+    
+    async def startup(self):
+        """Start the UPEE engine and its components."""
+        if not self._agent_manager_started:
+            await self.agent_manager.startup()
+            self._agent_manager_started = True
+            self.logger.info("UPEE Engine started with agent manager")
+    
+    async def shutdown(self):
+        """Shutdown the UPEE engine and its components."""
+        if self._agent_manager_started:
+            await self.agent_manager.shutdown()
+            self._agent_manager_started = False
+            self.logger.info("UPEE Engine shutdown complete")
     
     async def process_request(
         self, 
@@ -65,6 +81,10 @@ class UPEEEngine:
         Yields:
             Events (thinking, content, complete, error)
         """
+        # Ensure agent manager is started
+        if not self._agent_manager_started:
+            await self.startup()
+            
         if request_id is None:
             request_id = str(uuid.uuid4())
         
@@ -281,9 +301,54 @@ class UPEEEngine:
             )
         
         try:
-            result = await self.understand_phase.process(
-                request, self.current_request_id
+            # Check if we should use an external agent
+            context = {
+                "message": request.message,
+                "files": [f.model_dump() for f in request.files] if request.files else [],
+                "model": request.model,
+                "context_window": request.context_window
+            }
+            
+            agent_decision = await self.agent_manager.should_use_agent(
+                UPEEPhase.UNDERSTAND, context
             )
+            
+            if agent_decision:
+                if request.show_thinking:
+                    yield await self._create_thinking_event(
+                        UPEEPhase.UNDERSTAND,
+                        f"Using external agent '{agent_decision.agent_id}' for {agent_decision.capability}. "
+                        f"Reason: {agent_decision.reasoning}"
+                    )
+                
+                # Execute agent request
+                agent_response = await self.agent_manager.execute_agent_request(
+                    agent_decision,
+                    payload={"request": request.model_dump()},
+                    context=context
+                )
+                
+                if agent_response.status == "success":
+                    # Merge agent results with local processing
+                    result = await self.understand_phase.process(
+                        request, self.current_request_id, 
+                        agent_enhancement=agent_response.result
+                    )
+                else:
+                    # Fallback to local processing
+                    self.logger.warning(
+                        f"Agent request failed: {agent_response.error}",
+                        agent_id=agent_decision.agent_id
+                    )
+                    result = await self.understand_phase.process(
+                        request, self.current_request_id
+                    )
+            else:
+                # Normal local processing
+                result = await self.understand_phase.process(
+                    request, self.current_request_id
+                )
+            
             self.phase_results[UPEEPhase.UNDERSTAND] = result
             
             duration = time.time() - phase_start
@@ -291,7 +356,11 @@ class UPEEEngine:
                 "understand", 
                 self.current_request_id, 
                 "Phase completed successfully",
-                {"duration_ms": duration * 1000, "tokens_analyzed": result.metadata.get("tokens", 0)}
+                {
+                    "duration_ms": duration * 1000, 
+                    "tokens_analyzed": result.metadata.get("tokens", 0),
+                    "used_agent": agent_decision is not None
+                }
             )
             
             if request.show_thinking:
@@ -325,11 +394,63 @@ class UPEEEngine:
             )
         
         try:
-            result = await self.plan_phase.process(
-                request, 
-                self.current_request_id,
-                self.phase_results.get(UPEEPhase.UNDERSTAND)
+            # Check if we should use an external agent
+            understanding_result = self.phase_results.get(UPEEPhase.UNDERSTAND)
+            context = {
+                "understanding_result": understanding_result.model_dump() if understanding_result else {},
+                "message": request.message,
+                "model": request.model
+            }
+            
+            agent_decision = await self.agent_manager.should_use_agent(
+                UPEEPhase.PLAN, context
             )
+            
+            if agent_decision:
+                if request.show_thinking:
+                    yield await self._create_thinking_event(
+                        UPEEPhase.PLAN,
+                        f"Using external agent '{agent_decision.agent_id}' for {agent_decision.capability}. "
+                        f"Reason: {agent_decision.reasoning}"
+                    )
+                
+                # Execute agent request
+                agent_response = await self.agent_manager.execute_agent_request(
+                    agent_decision,
+                    payload={
+                        "request": request.model_dump(),
+                        "understanding_result": understanding_result.model_dump() if understanding_result else {}
+                    },
+                    context=context
+                )
+                
+                if agent_response.status == "success":
+                    # Merge agent results with local processing
+                    result = await self.plan_phase.process(
+                        request, 
+                        self.current_request_id,
+                        understanding_result,
+                        agent_enhancement=agent_response.result
+                    )
+                else:
+                    # Fallback to local processing
+                    self.logger.warning(
+                        f"Agent request failed: {agent_response.error}",
+                        agent_id=agent_decision.agent_id
+                    )
+                    result = await self.plan_phase.process(
+                        request, 
+                        self.current_request_id,
+                        understanding_result
+                    )
+            else:
+                # Normal local processing
+                result = await self.plan_phase.process(
+                    request, 
+                    self.current_request_id,
+                    understanding_result
+                )
+            
             self.phase_results[UPEEPhase.PLAN] = result
             
             duration = time.time() - phase_start
@@ -337,7 +458,11 @@ class UPEEEngine:
                 "plan", 
                 self.current_request_id, 
                 "Phase completed successfully",
-                {"duration_ms": duration * 1000, "plan_complexity": result.metadata.get("complexity", "simple")}
+                {
+                    "duration_ms": duration * 1000, 
+                    "plan_complexity": result.metadata.get("complexity", "simple"),
+                    "used_agent": agent_decision is not None
+                }
             )
             
             if request.show_thinking:
