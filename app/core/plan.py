@@ -6,8 +6,16 @@ from typing import Dict, Any, Optional
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase
 from app.settings import Settings
 from app.utils.logging_config import get_logger
-from app.utils.a2a_client import A2AClient
+from app.utils.agent_client import AgentClient
 
+import uuid, json, httpx, asyncio
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import BaseTool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.messages import AIMessage
+from a2a.client import A2AClient as RawA2AClient
+from a2a.types import MessageSendParams, Message, Role, Part, TextPart
 
 class PlanPhase:
     """
@@ -24,7 +32,7 @@ class PlanPhase:
         self.settings = settings
         self.logger = get_logger("plan_phase")
         # A2A 클라이언트 초기화
-        self.a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout) if settings.a2a_enabled else None
+        self.a2a_client = AgentClient(settings.a2a_server_url) if settings.a2a_enabled else None
 
     async def process(
         self, 
@@ -324,48 +332,141 @@ class PlanPhase:
         }
 
     async def _check_a2a_agent_match(self, request: ChatRequest) -> Optional[Dict[str, Any]]:
-        """Check if user request matches any A2A agent skills."""
+        """Use an LLM + LangChain agent to decide whether to invoke an A2A agent skill, and
+        if appropriate, call the skill via the A2A protocol.
+
+        The logic is inspired by the standalone `a2a_cli.py` example but adapted to run
+        inside the planning phase. It works as follows:
+        1. Fetch the agent-card (skills metadata) from the configured A2A server.
+        2. Wrap every skill from the card as a LangChain `BaseTool` that, when executed,
+           performs the actual A2A `send_message` RPC for that skill.
+        3. Build a lightweight LangChain agent (`ChatOpenAI` + prompt) and let the LLM
+           decide whether any of the tools should be invoked (``tool_choice="auto"``).
+        4. Execute the chain with the user message. If the LLM triggers a tool call,
+           we treat that as a positive match and return the tool invocation result.
+        """
+
+        # 사전 조건 검사: A2A 기능 및 OpenAI API 키가 모두 설정돼 있어야 한다.
+        if not (self.settings.a2a_enabled and self.a2a_client and self.settings.openai_api_key):
+            return None
+
         try:
-            # A2A 에이전트 카드 가져오기
+            # 1️⃣ 에이전트 카드 조회 --------------------------------------------------
             agent_card = await self.a2a_client.get_agent_card()
             if not agent_card:
                 return None
-            
             skills = agent_card.get("skills", [])
             if not skills:
                 return None
-            
-            user_message = request.message.lower()
-            
-            # 각 스킬에 대해 매칭 확인
-            for skill in skills:
-                skill_name = skill.get("name", "")
-                skill_description = skill.get("description", "")
-                skill_id = skill.get("id", "")
-                
-                # 키워드 기반 매칭
-                if self._is_skill_match(user_message, skill_name, skill_description):
-                    self.logger.info(
-                        "A2A agent skill match found",
-                        skill_name=skill_name,
-                        skill_id=skill_id,
-                        agent_name=agent_card.get("name", "Unknown")
-                    )
-                    
-                    return {
-                        "matched": True,
-                        "skill_name": skill_name,
-                        "skill_id": skill_id,
-                        "skill_description": skill_description,
-                        "agent_name": agent_card.get("name", "Unknown"),
-                        "agent_url": agent_card.get("url", ""),
-                        "skill_data": skill
-                    }
-            
+
+            # 2️⃣ LangChain 도구 정의 ---------------------------------
+
+            class A2ASkillTool(BaseTool):
+                """A single A2A skill exposed as a LangChain tool."""
+
+                id: str  # skill ID
+                name: str  # skill 이름 (LangChain tool name과 동일)
+                description: str  # skill 설명
+                a2a_url: str  # 대상 A2A 서버 URL
+
+                def _run(self, **kwargs):  # sync wrapper
+                    return asyncio.run(self._arun(**kwargs))
+
+                async def _arun(self, **kwargs):
+                    """Plan 단계에서는 실제 A2A 호출을 수행하지 않는다.
+
+                    LLM 이 도구를 선택해도 여기서는 네트워크 요청을 생략하고,
+                    매칭 여부만 알려주는 더미 응답을 반환한다.
+                    """
+                    return {"status": "matched", "params": kwargs}
+
+            # LangChain tool 인스턴스화
+            tools = [
+                A2ASkillTool(
+                    id=s.get("id", ""),
+                    name=s.get("name", ""),
+                    description=s.get("description", ""),
+                    a2a_url=agent_card.get("url", ""),
+                )
+                for s in skills
+            ]
+            if not tools:
+                return None
+
+            # 3️⃣ LLM & 프롬프트 체인 -------------------------------------------------
+            llm = ChatOpenAI(
+                model=self.settings.resolved_default_model,
+                openai_api_key=self.settings.openai_api_key,
+                temperature=0.0,
+            )
+
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    "You are an orchestration agent that decides which domain skill to call. "
+                    "If none of the registered tools are relevant, answer the user's request directly. "
+                    "Only use a tool if it will help you fulfil the user's request.",
+                ),
+                ("user", "{input_text}"),
+            ])
+
+            def maybe_run_tools(ai_msg: AIMessage):
+                """실제 LangChain tool 호출을 담당."""
+                if ai_msg.additional_kwargs.get("tool_calls"):
+                    results = []
+                    called_skill = None
+                    for call in ai_msg.additional_kwargs["tool_calls"]:
+                        name = call["function"]["name"]
+                        args = json.loads(call["function"]["arguments"])
+                        called_skill = name
+                        tool = {t.name: t for t in tools}.get(name)
+                        if tool:
+                            results.append(tool.invoke(args))
+                    return {"tool_called": True, "skill_name": called_skill, "results": results}
+                # 도구 호출이 없으면 LLM 응답만 반환
+                return {"tool_called": False, "response": ai_msg.content}
+
+            agent_chain = (
+                {"input_text": RunnablePassthrough()}  # 입력 매핑
+                | prompt
+                | llm.bind_tools(tools, tool_choice="auto")
+                | RunnableLambda(maybe_run_tools)
+            )
+
+            chain_output = await agent_chain.ainvoke(
+                {"input_text": request.message, "user_id": getattr(request, "user_id", None)}
+            )
+
+            # 4️⃣ 반환 형식 표준화 ------------------------------------------------------
+            if chain_output.get("tool_called"):
+                skill_name = chain_output.get("skill_name")
+                skill_id = ""
+                skill_data: Dict[str, Any] = {}
+                for s in skills:
+                    if s.get("name") == skill_name:
+                        skill_id = s.get("id", "")
+                        skill_data = s
+                        break
+
+                # 도구 호출 결과(파라미터 등)는 리스트 형태로 results 에 담겨 있다.
+                tool_results = chain_output.get("results", []) or []
+                extracted_params = {}
+                if tool_results and isinstance(tool_results[0], dict):
+                    extracted_params = tool_results[0].get("params", {})
+
+                return {
+                    "matched": True,
+                    "skill_name": skill_name,
+                    "skill_id": skill_id,
+                    "skill_data": skill_data,
+                    "parameters": extracted_params,
+                    "agent_name": agent_card.get("name", "Unknown"),
+                    "agent_url": agent_card.get("url", ""),
+                }
             return {"matched": False}
-            
-        except Exception as e:
-            self.logger.error(f"Error checking A2A agent match: {e}")
+
+        except Exception as e:  # pragma: no cover
+            self.logger.error("Error during LLM-based A2A skill check", error=str(e), exc_info=True)
             return None
 
     def _is_skill_match(self, user_message: str, skill_name: str, skill_description: str) -> bool:

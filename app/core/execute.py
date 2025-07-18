@@ -9,6 +9,8 @@ from app.llm_providers import LLMProviderManager, LLMRequest, LLMProviderError
 from app.grpc_clients.base import ServiceUnavailableError
 from app.utils.logging_config import get_logger
 from app.settings import Settings
+# 추가: A2A 클라이언트 임포트
+from app.utils.agent_client import AgentClient
 
 
 class ExecutePhase:
@@ -27,6 +29,11 @@ class ExecutePhase:
         self.logger = get_logger("execute_phase")
         self.llm_manager = LLMProviderManager(settings)
         self.grpc_manager = grpc_manager
+        # A2A 클라이언트 초기화 (Plan 단계와 동일한 설정 사용)
+        self.a2a_client = (
+            AgentClient(settings.a2a_server_url)
+            if settings.a2a_enabled else None
+        )
     
     async def process(
         self, 
@@ -287,19 +294,30 @@ class ExecutePhase:
                     request_id=request_id,
                     call_type=call_type
                 )
-                
-                # Execute actual gRPC call if manager is available
-                if self.grpc_manager and call_type in ["worker_task", "code_analysis", "file_processing", "data_extraction"]:
-                    result = await self._execute_worker_task(request, request_id, call_type, plan_meta)
+
+                # 1) A2A 에이전트 호출 처리
+                if call_type == "a2a_agent":
+                    result = await self._execute_a2a_agent(request, request_id, plan_meta)
                     external_results[call_type] = result
+                # 2) gRPC 워커 작업 처리
+                elif self.grpc_manager and call_type in [
+                    "worker_task",
+                    "code_analysis",
+                    "file_processing",
+                    "data_extraction",
+                ]:
+                    result = await self._execute_worker_task(
+                        request, request_id, call_type, plan_meta
+                    )
+                    external_results[call_type] = result
+                # 3) 기타 - 모의 응답
                 else:
-                    # Fallback to simulation
                     await asyncio.sleep(0.1)  # Simulate network delay
                     external_results[call_type] = {
                         "status": "success",
                         "data": f"Mock result for {call_type}",
                         "timestamp": time.time(),
-                        "source": "simulation"
+                        "source": "simulation",
                     }
                 
             except Exception as e:
@@ -375,6 +393,66 @@ class ExecutePhase:
                 "error": str(e),
                 "timestamp": time.time(),
                 "source": "worker_agent"
+            }
+
+    async def _execute_a2a_agent(
+        self,
+        request: ChatRequest,
+        request_id: str,
+        plan_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """실제 A2A 에이전트(스킬)를 호출합니다."""
+
+        if not self.a2a_client:
+            return {
+                "status": "error",
+                "error": "A2A client not configured",
+                "timestamp": time.time(),
+                "source": "a2a_agent",
+            }
+
+        # Plan 단계에서 찾은 매칭 스킬 정보 사용
+        match_info: Dict[str, Any] = plan_meta.get("a2a_agent_match", {})
+        if not match_info or not match_info.get("matched"):
+            return {
+                "status": "error",
+                "error": "No matching A2A skill found in plan metadata",
+                "timestamp": time.time(),
+                "source": "a2a_agent",
+            }
+
+        message_payload = {
+            "type": "skill_request",
+            "skill_id": match_info.get("skill_id"),
+            "skill_name": match_info.get("skill_name"),
+            # 사용자가 입력한 전체 메시지를 그대로 전달 (파라미터가 필요한 경우 추후 확장)
+            "parameters": match_info.get("parameters", {}),
+            "user_message": request.message,
+        }
+
+        try:
+            result = await self.a2a_client.send_message(message_payload)
+
+            return {
+                "status": result.get("status", "success"),
+                # result 내부 구조: {status:..., response:...}
+                "data": result.get("response", result),
+                "timestamp": time.time(),
+                "source": "a2a_agent",
+            }
+
+        except Exception as e:
+            self.logger.error(
+                "A2A agent call failed",
+                request_id=request_id,
+                error=str(e),
+                exc_info=True,
+            )
+            return {
+                "status": "error",
+                "error": str(e),
+                "timestamp": time.time(),
+                "source": "a2a_agent",
             }
     
     def _prepare_task_payload(

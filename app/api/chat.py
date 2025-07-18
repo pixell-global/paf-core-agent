@@ -67,7 +67,7 @@ async def upee_chat_stream(
                 f"{request_id}-a2a-discover"
             )
             
-            # A2A 표준에 따른 에이전트 탐색
+            # A2A 표준에 따른 에이전트 탐색 #TODO: AgentDiscoveryService.discover_agents()로 변경 필요
             agents = await upee_engine.a2a_client.discover_agents()
             if agents:
                 agent_info = []
@@ -414,9 +414,9 @@ async def discover_a2a_agents(
         raise HTTPException(status_code=503, detail="A2A functionality is disabled")
     
     try:
-        from app.utils.a2a_client import A2AClient
+        from app.utils.agent_client import AgentClient
         
-        a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        a2a_client = AgentClient(settings.a2a_server_url)
         agents = await a2a_client.discover_agents()
         
         # A2A 표준에 따른 에이전트 정보 구성
@@ -464,9 +464,9 @@ async def get_a2a_agent_details(
         raise HTTPException(status_code=503, detail="A2A functionality is disabled")
     
     try:
-        from app.utils.a2a_client import A2AClient
+        from app.utils.agent_client import AgentClient
         
-        a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        a2a_client = AgentClient(settings.a2a_server_url)
         # A2A 표준에 따른 에이전트 카드 가져오기
         agent_card = await a2a_client.get_agent_card()
         
@@ -522,9 +522,9 @@ async def check_a2a_status(
         }
     
     try:
-        from app.utils.a2a_client import A2AClient
+        from app.utils.agent_client import AgentClient
         
-        a2a_client = A2AClient(settings.a2a_server_url, settings.a2a_timeout)
+        a2a_client = AgentClient(settings.a2a_server_url)
         is_healthy = await a2a_client.health_check()
         
         return {
