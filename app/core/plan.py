@@ -676,7 +676,7 @@ class PlanPhase:
             "sections": sections,
             "estimated_length": self._estimate_response_length(intent, approach, file_count)
         }
-
+    
     async def _plan_execution_parameters(
         self, 
         request: ChatRequest, 
@@ -726,20 +726,21 @@ class PlanPhase:
             "streaming_recommended": True,  # Always recommend streaming for chat
             "stop_sequences": []
         }
-
-    def _estimate_output_tokens(self,
-                                intent: str,
-                                complexity: str,
-                                understanding_meta:Dict[str, Any]) -> int:
-        """Estimate output tokens based on intent and complexity."""
+    
+    def _estimate_response_length(
+        self, 
+        intent: str, 
+        approach: str, 
+        file_count: int
+    ) -> str:
+        """Estimate response length category."""
         
-        # Base estimates
-        base_estimates = {
-            "conversation": 300,
-            "question": 500,
-            "request": 400,
-            "task": 800,
-            "analysis": 1000
+        base_length = {
+            "conversation": "short",
+            "question": "medium",
+            "request": "medium",
+            "task": "long",
+            "analysis": "long"
         }
         
         length = base_length.get(intent, "medium")
@@ -772,43 +773,20 @@ class PlanPhase:
         tokens = base_tokens.get(intent, 8000)  # Better default
         
         # Adjust for complexity
-        complexity_multipliers = {
+        complexity_multiplier = {
             "simple": 1.0,
             "moderate": 1.5,
             "complex": 2.5  # Increased from 2.0
         }
-        
-        complexity_multiplier = complexity_multipliers.get(complexity, 1.0)
+        tokens = int(tokens * complexity_multiplier.get(complexity, 1.0))
         
         # Adjust for file context
         file_count = understanding_meta.get("file_count", 0)
         if file_count > 0:
             tokens += file_count * 200  # Increased from 100 tokens per file
         
-        # Adjust for conversation history
-        history_length = understanding_meta.get("conversation_history", {}).get("message_count", 0)
-        if history_length > 0:
-            base_tokens += min(history_length * 50, 300)  # Up to 300 tokens for history context
-        
-        estimated_tokens = int(base_tokens * complexity_multiplier)
-        
-        # Ensure minimum and maximum bounds
-        return max(200, min(estimated_tokens, 10000))
-
-    def _estimate_response_length(self, intent: str, approach: str, file_count: int) -> str:
-        """Estimate response length category."""
-        
-        if intent == "conversation":
-            return "short"
-        elif intent == "question":
-            return "medium"
-        elif intent == "task":
-            return "long"
-        elif intent == "analysis":
-            return "very_long" if file_count > 0 else "long"
-        else:
-            return "medium"
-
+        return tokens
+    
     def _build_plan_summary(
         self,
         strategy: Dict[str, Any],
@@ -844,9 +822,9 @@ class PlanPhase:
                     skill_name = a2a_match.get("skill_name", "unknown")
                     summary_parts.append(f"External calls: A2A agent skill '{skill_name}'")
                 else:
-                    summary_parts.append(f"External calls: {', '.join(call_types)}")
+                    summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
             else:
-                summary_parts.append(f"External calls: {', '.join(call_types)}")
+                summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
         
         summary_parts.append(f"Est. tokens: {execution_params['estimated_output_tokens']}")
         
