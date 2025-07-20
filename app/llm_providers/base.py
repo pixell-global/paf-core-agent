@@ -16,15 +16,30 @@ class LLMProviderType(str, Enum):
 
 
 @dataclass
+class LLMMessage:
+    """Represents a single message in a conversation."""
+    role: str  # "user", "assistant", or "system"
+    content: str
+
+
+@dataclass
 class LLMRequest:
     """LLM request parameters."""
     model: str
-    prompt: str
+    prompt: str = None  # Optional - for backward compatibility
+    messages: Optional[List[LLMMessage]] = None  # New: conversation messages
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     stream: bool = True
     system_prompt: Optional[str] = None
     request_id: Optional[str] = None
+    
+    def __post_init__(self):
+        """Validate that either prompt or messages is provided."""
+        if not self.prompt and not self.messages:
+            raise ValueError("Either prompt or messages must be provided")
+        if self.prompt and self.messages:
+            raise ValueError("Cannot provide both prompt and messages")
 
 
 @dataclass
@@ -114,6 +129,33 @@ class LLMProvider(ABC):
         if system_prompt:
             return f"System: {system_prompt}\n\nUser: {user_prompt}"
         return user_prompt
+    
+    def _convert_prompt_to_messages(self, prompt: str, system_prompt: Optional[str] = None) -> List[LLMMessage]:
+        """Convert a simple prompt to messages format for backward compatibility."""
+        messages = []
+        if system_prompt:
+            messages.append(LLMMessage(role="system", content=system_prompt))
+        messages.append(LLMMessage(role="user", content=prompt))
+        return messages
+    
+    def _convert_messages_to_prompt(self, messages: List[LLMMessage], system_prompt: Optional[str] = None) -> str:
+        """Convert messages to a single prompt string for providers that don't support messages."""
+        parts = []
+        
+        # Add system prompt if provided and not already in messages
+        if system_prompt and not any(msg.role == "system" for msg in messages):
+            parts.append(f"System: {system_prompt}")
+        
+        # Convert messages to string format
+        for msg in messages:
+            if msg.role == "system":
+                parts.append(f"System: {msg.content}")
+            elif msg.role == "user":
+                parts.append(f"User: {msg.content}")
+            elif msg.role == "assistant":
+                parts.append(f"Assistant: {msg.content}")
+        
+        return "\n\n".join(parts)
     
     async def health_check(self) -> Dict[str, Any]:
         """Perform a health check on the provider."""

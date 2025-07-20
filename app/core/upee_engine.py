@@ -305,7 +305,7 @@ class UPEEEngine:
                 "message": request.message,
                 "files": [f.model_dump() for f in request.files] if request.files else [],
                 "model": request.model,
-                "context_window": request.context_window
+                "context_window": request.context_window_size
             }
             
             agent_decision = await self.agent_manager.should_use_agent(
