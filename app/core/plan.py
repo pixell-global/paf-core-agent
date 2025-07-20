@@ -533,7 +533,7 @@ class PlanPhase:
                 reasons.append("complex task benefits from distributed processing")
         
         return f"External calls planned: {', '.join(reasons)}"
-
+    
     async def _plan_file_processing(
         self, 
         request: ChatRequest, 
@@ -584,14 +584,14 @@ class PlanPhase:
             "files_with_signed_urls": files_with_signed_urls,
             "total_size": total_file_size
         }
-
+    
     async def _plan_memory_usage(
         self, 
         request: ChatRequest, 
         understanding_meta: Dict[str, Any],
         strategy: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Plan how to use conversation history and memory."""
+        """Plan how to use conversation history (short-term memory)."""
         
         history_info = understanding_meta.get("conversation_history", {})
         message_count = history_info.get("message_count", 0)
@@ -599,32 +599,43 @@ class PlanPhase:
         if message_count == 0:
             return {
                 "approach": "no_history",
-                "strategy": "fresh_conversation",
-                "context_window": 0
+                "strategy": "fresh_context",
+                "context_inclusion": "none"
             }
         
-        # Determine memory strategy based on history length
-        if message_count <= 5:
-            approach = "full_history"
-            strategy = "complete_context"
-            context_window = message_count
-        elif message_count <= 20:
-            approach = "windowed_history"
+        history_tokens = history_info.get("total_tokens_estimate", 0)
+        was_truncated = history_info.get("history_truncated", False)
+        files_in_history = history_info.get("files_in_history", 0)
+        
+        # Determine memory approach
+        if history_tokens > 2000:
+            approach = "selective_memory"
             strategy = "recent_focus"
-            context_window = min(10, message_count)
+        elif message_count > 8:
+            approach = "contextual_memory"
+            strategy = "relevant_extraction"
         else:
-            approach = "summarized_history"
-            strategy = "key_points_only"
-            context_window = 15
+            approach = "full_memory"
+            strategy = "complete_context"
+        
+        # Determine context inclusion
+        if was_truncated:
+            context_inclusion = "truncated_with_summary"
+        elif files_in_history > 0:
+            context_inclusion = "history_with_file_refs"
+        else:
+            context_inclusion = "full_history"
         
         return {
             "approach": approach,
             "strategy": strategy,
-            "context_window": context_window,
+            "context_inclusion": context_inclusion,
             "message_count": message_count,
-            "memory_limit": getattr(request, 'memory_limit', None)
+            "history_tokens": history_tokens,
+            "was_truncated": was_truncated,
+            "files_in_history": files_in_history
         }
-
+    
     async def _plan_response_structure(
         self, 
         request: ChatRequest, 
@@ -716,7 +727,10 @@ class PlanPhase:
             "stop_sequences": []
         }
 
-    def _estimate_output_tokens(self, intent: str, complexity: str, understanding_meta: Dict[str, Any]) -> int:
+    def _estimate_output_tokens(self,
+                                intent: str,
+                                complexity: str,
+                                understanding_meta:Dict[str, Any]) -> int:
         """Estimate output tokens based on intent and complexity."""
         
         # Base estimates
@@ -728,13 +742,40 @@ class PlanPhase:
             "analysis": 1000
         }
         
-        base_tokens = base_estimates.get(intent, 500)
+        length = base_length.get(intent, "medium")
+        
+        # Adjust for file context
+        if file_count > 0:
+            if length == "short":
+                length = "medium"
+            elif length == "medium":
+                length = "long"
+        
+        return length
+    
+    def _estimate_output_tokens(
+        self, 
+        intent: str, 
+        complexity: str, 
+        understanding_meta: Dict[str, Any]
+    ) -> int:
+        """Estimate number of output tokens needed."""
+        
+        base_tokens = {
+            "conversation": 3000,     # Increased from 50
+            "question": 8000,         # Increased from 200
+            "request": 10000,         # Increased from 300
+            "task": 15000,            # Increased from 500
+            "analysis": 20000         # Increased from 600
+        }
+        
+        tokens = base_tokens.get(intent, 8000)  # Better default
         
         # Adjust for complexity
         complexity_multipliers = {
             "simple": 1.0,
             "moderate": 1.5,
-            "complex": 2.0
+            "complex": 2.5  # Increased from 2.0
         }
         
         complexity_multiplier = complexity_multipliers.get(complexity, 1.0)
@@ -742,7 +783,7 @@ class PlanPhase:
         # Adjust for file context
         file_count = understanding_meta.get("file_count", 0)
         if file_count > 0:
-            base_tokens += file_count * 200  # 200 tokens per file for context discussion
+            tokens += file_count * 200  # Increased from 100 tokens per file
         
         # Adjust for conversation history
         history_length = understanding_meta.get("conversation_history", {}).get("message_count", 0)

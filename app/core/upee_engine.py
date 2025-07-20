@@ -313,7 +313,7 @@ class UPEEEngine:
                 "message": request.message,
                 "files": [f.model_dump() for f in request.files] if request.files else [],
                 "model": request.model,
-                "context_window": request.context_window_size
+                "context_window": request.context_window
             }
             
             agent_decision = await self.agent_manager.should_use_agent(
@@ -596,9 +596,7 @@ class UPEEEngine:
         request: ChatRequest, 
         duration: float
     ) -> Dict[str, Any]:
-        """Create completion event with result summary."""
-        
-        # Extract key metrics from phase results
+        """Create the final completion event with retry information."""
         execute_result = self.phase_results.get(UPEEPhase.EXECUTE)
         evaluate_result = self.phase_results.get(UPEEPhase.EVALUATE)
         
@@ -610,10 +608,19 @@ class UPEEEngine:
             "attempt_scores": [attempt.get("quality_score", 0.0) for attempt in self.retry_attempts]
         }
         
+        # Include retry information in completion data
+        retry_summary = {
+            "total_attempts": len(self.retry_attempts),
+            "final_quality_score": evaluate_result.metadata.get("quality_score", 0.0) if evaluate_result else 0.0,
+            "retry_triggered": len(self.retry_attempts) > 1,
+            "max_retries_reached": self.retry_count >= self.max_retries,
+            "attempt_scores": [attempt["quality_score"] for attempt in self.retry_attempts]
+        }
+        
         complete_data = CompleteEvent(
             total_tokens=execute_result.metadata.get("tokens_used", 0) if execute_result else 0,
             duration=duration,
-            model=self.phase_results.get(UPEEPhase.PLAN, UPEEResult(phase=UPEEPhase.PLAN, content="", metadata={})).metadata.get("model_recommendation", "unknown"),
+            model=execute_result.metadata.get("model_used", request.model or self.settings.resolved_default_model) if execute_result else (request.model or self.settings.resolved_default_model),
             timestamp=time.time()
         )
         
