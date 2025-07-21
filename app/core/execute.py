@@ -2,10 +2,11 @@
 
 import asyncio
 import time
-from typing import Dict, Any, Optional, AsyncGenerator
+from typing import Dict, Any, Optional, AsyncGenerator, List
 
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase, EventType, ContentEvent
 from app.llm_providers import LLMProviderManager, LLMRequest, LLMProviderError
+from app.llm_providers.base import LLMMessage
 from app.grpc_clients.base import ServiceUnavailableError
 from app.utils.logging_config import get_logger
 from app.settings import Settings
@@ -104,7 +105,7 @@ class ExecutePhase:
             
             # Execute LLM call with streaming
             async for event in self._execute_llm_streaming(
-                prompt, model_to_use, temperature, max_tokens, request_id, external_results
+                prompt, model_to_use, temperature, max_tokens, request_id, external_results, request
             ):
                 if event["event"] == EventType.CONTENT:
                     # Track tokens (rough estimation)
@@ -189,8 +190,18 @@ class ExecutePhase:
         strategy = plan_meta.get("strategy", "direct_response")
         approach = plan_meta.get("response_structure", "structured")
         
+        # Get language information
+        language_info = {
+            "language": understanding_meta.get("language", "English"),
+            "language_code": understanding_meta.get("language_code", "en"),
+            "confidence": understanding_meta.get("language_confidence", "low")
+        }
+        
+        # Check if this is a table generation request
+        is_table_generation = self._is_table_generation_request(request.message)
+        
         # Build system prompt based on strategy
-        system_prompt = self._build_system_prompt(intent, strategy, approach)
+        system_prompt = self._build_system_prompt(intent, strategy, approach, language_info, understanding_meta, is_table_generation)
         
         # Build user prompt with file context
         user_prompt = await self._build_user_prompt(request, understanding_meta)
@@ -200,30 +211,69 @@ class ExecutePhase:
         
         return full_prompt
     
-    def _build_system_prompt(self, intent: str, strategy: str, approach: str) -> str:
+    def _build_system_prompt(self, intent: str, strategy: str, approach: str, language_info: Dict[str, str], understanding_meta: Dict[str, Any], is_table_generation: bool = False) -> str:
         """Build the system prompt based on the execution plan."""
         
-        base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide intelligent responses through a structured UPEE (Understand → Plan → Execute → Evaluate) process."
+        base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide accurate and helpful responses."
+        
+        # Add language instruction if not English
+        if language_info.get("language_code", "en") != "en":
+            language_instruction = f"""
+IMPORTANT: The user is writing in {language_info['language']}. You MUST respond in {language_info['language']}.
+- Write your entire response in {language_info['language']}
+- Do NOT translate technical terms, code, file paths, or data sources unless explicitly asked
+- Keep variable names, function names, and code snippets in their original language
+- If referencing external sources or documentation, keep those references in their original language
+"""
+            base_prompt = f"{base_prompt}\n{language_instruction}"
+        
+        # Check if this is a table generation request and override behavior
+        if is_table_generation:
+            base_prompt += """
+
+IMPORTANT: The user is asking you to CREATE or GENERATE a table with data. DO NOT provide instructions on how to create a table in software applications. Instead:
+- Generate the actual table data requested by the user
+- Use markdown table format with proper headers and separators (|Header1|Header2|...)
+- Fill the table with the actual data requested
+- If the user asks for specific data (like numbers 1-500), generate that exact data
+- Format the table clearly and ensure proper alignment
+- DO NOT mention Excel, Google Sheets, or any other software
+- DO NOT provide step-by-step instructions
+- ONLY generate the actual table with the requested data
+"""
         
         # Customize based on intent and strategy
         intent_prompts = {
             "conversation": "Engage in natural, friendly conversation while being helpful and informative.",
             "question": "Provide clear, accurate, and comprehensive answers to questions. Use examples when helpful.",
             "request": "Focus on understanding the user's needs and provide practical, actionable solutions.",
-            "task": "Break down complex tasks into clear steps. Be methodical and thorough in your approach.",
+            "task": "Break down complex tasks into clear steps. Be methodical and thorough in your approach." if not is_table_generation else "Generate the requested data directly without explaining how to do it.",
             "analysis": "Provide detailed, analytical responses. Consider multiple perspectives and provide evidence-based insights."
         }
+        
+        # Add specific instructions for table formatting if CSV data is detected
+        if understanding_meta and understanding_meta.get("processed_files"):
+            for file_info in understanding_meta.get("processed_files", []):
+                if file_info.get("file_type") == "csv" or "CSV FILE ANALYSIS" in file_info.get("content", ""):
+                    base_prompt += """
+
+When presenting tabular data:
+- Use markdown table format (|column1|column2|...) for better readability
+- Keep column widths reasonable by truncating long text
+- Show the most important columns if there are too many
+- Ensure proper alignment and formatting
+- If asked to create a table in a specific language, format headers and explanations in that language"""
         
         approach_prompts = {
             "conversational": "Keep your tone natural and engaging.",
             "explanatory": "Focus on clarity and educational value.",
-            "step_by_step": "Structure your response with clear steps and actionable guidance.",
+            "step_by_step": "Provide clear steps and actionable guidance.",
             "analytical_with_context": "Reference the provided context and build your analysis upon it.",
-            "structured": "Organize your response logically with clear sections."
+            "structured": "Provide a well-organized response."
         }
         
         intent_guidance = intent_prompts.get(intent, "Provide a helpful and informative response.")
-        approach_guidance = approach_prompts.get(approach, "Structure your response clearly.")
+        approach_guidance = approach_prompts.get(approach, "Provide a clear response.")
         
         return f"{base_prompt}\n\n{intent_guidance} {approach_guidance}"
     
@@ -260,8 +310,12 @@ class ExecutePhase:
                         file_name = processed_file.get("file_name", file_name)
                 
                 # Truncate if too long (simple implementation)
-                if file_content and len(file_content) > 2000:
-                    file_content = file_content[:2000] + "... [truncated]"
+                # For CSV files with table data, allow more content
+                is_csv_table = "CSV FILE ANALYSIS" in file_content or file_name.endswith('.csv')
+                max_length = 5000 if is_csv_table else 2000
+                
+                if file_content and len(file_content) > max_length:
+                    file_content = file_content[:max_length] + "... [truncated]"
                 
                 prompt_parts.append(f"\n--- File {i}: {file_name} ---")
                 prompt_parts.append(file_content or "[No content available]")
@@ -271,6 +325,28 @@ class ExecutePhase:
         prompt_parts.append(request.message)
         
         return "\n".join(prompt_parts)
+    
+    def _build_messages_array(
+        self,
+        request: ChatRequest,
+        system_prompt: str,
+        user_prompt: str
+    ) -> List[LLMMessage]:
+        """Build messages array from conversation history and current request."""
+        messages = []
+        
+        # Add system message
+        messages.append(LLMMessage(role="system", content=system_prompt))
+        
+        # Add conversation history if available
+        if request.history:
+            for msg in request.history:
+                messages.append(LLMMessage(role=msg.role, content=msg.content))
+        
+        # Add current user message with file context
+        messages.append(LLMMessage(role="user", content=user_prompt))
+        
+        return messages
     
     async def _execute_external_calls(
         self,
@@ -511,7 +587,8 @@ class ExecutePhase:
         temperature: float,
         max_tokens: Optional[int],
         request_id: str,
-        external_results: Dict[str, Any]
+        external_results: Dict[str, Any],
+        request: ChatRequest = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute LLM call with streaming response."""
         
@@ -532,11 +609,14 @@ class ExecutePhase:
                 external_context = self._format_external_results(external_results)
                 user_prompt = f"{user_prompt}\n\nAdditional context from external services:\n{external_context}"
             
-            # Create LLM request
+            # Build messages array from conversation history
+            # request parameter is available from the enclosing _execute_llm_streaming method
+            messages = self._build_messages_array(request, system_prompt, user_prompt)
+            
+            # Create LLM request with messages
             llm_request = LLMRequest(
                 model=model,
-                prompt=user_prompt,
-                system_prompt=system_prompt,
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
@@ -697,4 +777,47 @@ class ExecutePhase:
         """Rough token estimation (4 characters per token average)."""
         return len(text) // 4
     
- 
+    def _is_table_generation_request(self, message: str) -> bool:
+        """Detect if the user is asking to generate/create a table with data."""
+        message_lower = message.lower()
+        
+        # Keywords that indicate table generation
+        table_keywords = ["table", "grid", "matrix", "chart", "spreadsheet"]
+        generation_keywords = ["create", "generate", "make", "build", "produce", "show me", "give me", "display"]
+        
+        # Check if message contains table-related keywords
+        has_table_keyword = any(keyword in message_lower for keyword in table_keywords)
+        has_generation_keyword = any(keyword in message_lower for keyword in generation_keywords)
+        
+        # Specific patterns that indicate table generation
+        table_generation_patterns = [
+            r"create\s+(?:a\s+)?table",
+            r"generate\s+(?:a\s+)?table",
+            r"make\s+(?:a\s+)?table",
+            r"build\s+(?:a\s+)?table",
+            r"table\s+of\s+\w+",
+            r"table\s+with\s+\w+",
+            r"table\s+showing\s+\w+",
+            r"show\s+me\s+(?:a\s+)?table",
+            r"give\s+me\s+(?:a\s+)?table",
+            r"display\s+(?:a\s+)?table"
+        ]
+        
+        # Check for specific patterns
+        import re
+        has_table_pattern = any(re.search(pattern, message_lower) for pattern in table_generation_patterns)
+        
+        # Exclude patterns that indicate questions about tables
+        exclude_patterns = [
+            r"how\s+to\s+create",
+            r"how\s+can\s+i",
+            r"how\s+do\s+i",
+            r"what\s+is\s+a\s+table",
+            r"explain\s+table"
+        ]
+        
+        has_exclude_pattern = any(re.search(pattern, message_lower) for pattern in exclude_patterns)
+        
+        # Return true if it's a table generation request and not a how-to question
+        return (has_table_pattern or (has_table_keyword and has_generation_keyword)) and not has_exclude_pattern
+    
