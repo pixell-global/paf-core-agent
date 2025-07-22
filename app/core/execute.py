@@ -106,7 +106,7 @@ class ExecutePhase:
             # Execute LLM call with streaming
             async for event in self._execute_llm_streaming(
                 prompt, model_to_use, temperature,
-                max_tokens, request_id, external_results
+                max_tokens, request_id, external_results, request
             ):
                 if event["event"] == EventType.CONTENT:
                     # Track tokens (rough estimation)
@@ -215,7 +215,7 @@ class ExecutePhase:
     def _build_system_prompt(self, intent: str, strategy: str, approach: str, language_info: dict[str, str], understanding_meta: dict[str, Any], is_table_generation: bool = False) -> str:
         """Build the system prompt based on the execution plan."""
         
-        base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide intelligent responses through a structured UPEE (Understand → Plan → Execute → Evaluate) process."
+        base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide accurate and helpful responses."
         
         # Add language instruction if not English
         if language_info.get("language_code", "en") != "en":
@@ -227,10 +227,11 @@ IMPORTANT: The user is writing in {language_info['language']}. You MUST respond 
 - If referencing external sources or documentation, keep those references in their original language
 """
             base_prompt = f"{base_prompt}\n{language_instruction}"
-            
-			        # Check if this is a table generation request and override behavior
+        
+        # Check if this is a table generation request and override behavior
         if is_table_generation:
             base_prompt += """
+
 IMPORTANT: The user is asking you to CREATE or GENERATE a table with data. DO NOT provide instructions on how to create a table in software applications. Instead:
 - Generate the actual table data requested by the user
 - Use markdown table format with proper headers and separators (|Header1|Header2|...)
@@ -267,13 +268,13 @@ When presenting tabular data:
         approach_prompts = {
             "conversational": "Keep your tone natural and engaging.",
             "explanatory": "Focus on clarity and educational value.",
-            "step_by_step": "Structure your response with clear steps and actionable guidance.",
+            "step_by_step": "Provide clear steps and actionable guidance.",
             "analytical_with_context": "Reference the provided context and build your analysis upon it.",
-            "structured": "Organize your response logically with clear sections."
+            "structured": "Provide a well-organized response."
         }
         
         intent_guidance = intent_prompts.get(intent, "Provide a helpful and informative response.")
-        approach_guidance = approach_prompts.get(approach, "Structure your response clearly.")
+        approach_guidance = approach_prompts.get(approach, "Provide a clear response.")
         
         return f"{base_prompt}\n\n{intent_guidance} {approach_guidance}"
     
@@ -386,8 +387,8 @@ When presenting tabular data:
                         request, request_id, call_type, plan_meta
                     )
                     external_results[call_type] = result
-                # 3) 기타 - 모의 응답
                 else:
+                    # Fallback to simulation
                     await asyncio.sleep(0.1)  # Simulate network delay
                     external_results[call_type] = {
                         "status": "success",
@@ -587,7 +588,8 @@ When presenting tabular data:
         temperature: float,
         max_tokens: Optional[int],
         request_id: str,
-        external_results: Dict[str, Any]
+        external_results: Dict[str, Any],
+        request: ChatRequest = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute LLM call with streaming response."""
         
@@ -608,11 +610,14 @@ When presenting tabular data:
                 external_context = self._format_external_results(external_results)
                 user_prompt = f"{user_prompt}\n\nAdditional context from external services:\n{external_context}"
             
-            # Create LLM request
+            # Build messages array from conversation history
+            # request parameter is available from the enclosing _execute_llm_streaming method
+            messages = self._build_messages_array(request, system_prompt, user_prompt)
+            
+            # Create LLM request with messages
             llm_request = LLMRequest(
                 model=model,
-                prompt=user_prompt,
-                system_prompt=system_prompt,
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
