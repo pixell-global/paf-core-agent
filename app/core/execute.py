@@ -105,7 +105,8 @@ class ExecutePhase:
             
             # Execute LLM call with streaming
             async for event in self._execute_llm_streaming(
-                prompt, model_to_use, temperature, max_tokens, request_id, external_results, request
+                prompt, model_to_use, temperature,
+                max_tokens, request_id, external_results
             ):
                 if event["event"] == EventType.CONTENT:
                     # Track tokens (rough estimation)
@@ -197,9 +198,9 @@ class ExecutePhase:
             "confidence": understanding_meta.get("language_confidence", "low")
         }
         
+
         # Check if this is a table generation request
         is_table_generation = self._is_table_generation_request(request.message)
-        
         # Build system prompt based on strategy
         system_prompt = self._build_system_prompt(intent, strategy, approach, language_info, understanding_meta, is_table_generation)
         
@@ -211,10 +212,10 @@ class ExecutePhase:
         
         return full_prompt
     
-    def _build_system_prompt(self, intent: str, strategy: str, approach: str, language_info: Dict[str, str], understanding_meta: Dict[str, Any], is_table_generation: bool = False) -> str:
+    def _build_system_prompt(self, intent: str, strategy: str, approach: str, language_info: dict[str, str], understanding_meta: dict[str, Any], is_table_generation: bool = False) -> str:
         """Build the system prompt based on the execution plan."""
         
-        base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide accurate and helpful responses."
+        base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide intelligent responses through a structured UPEE (Understand → Plan → Execute → Evaluate) process."
         
         # Add language instruction if not English
         if language_info.get("language_code", "en") != "en":
@@ -226,11 +227,10 @@ IMPORTANT: The user is writing in {language_info['language']}. You MUST respond 
 - If referencing external sources or documentation, keep those references in their original language
 """
             base_prompt = f"{base_prompt}\n{language_instruction}"
-        
-        # Check if this is a table generation request and override behavior
+            
+			        # Check if this is a table generation request and override behavior
         if is_table_generation:
             base_prompt += """
-
 IMPORTANT: The user is asking you to CREATE or GENERATE a table with data. DO NOT provide instructions on how to create a table in software applications. Instead:
 - Generate the actual table data requested by the user
 - Use markdown table format with proper headers and separators (|Header1|Header2|...)
@@ -238,7 +238,7 @@ IMPORTANT: The user is asking you to CREATE or GENERATE a table with data. DO NO
 - If the user asks for specific data (like numbers 1-500), generate that exact data
 - Format the table clearly and ensure proper alignment
 - DO NOT mention Excel, Google Sheets, or any other software
-- DO NOT provide step-by-Step instructions
+- DO NOT provide step-by-step instructions
 - ONLY generate the actual table with the requested data
 """
         
@@ -267,13 +267,13 @@ When presenting tabular data:
         approach_prompts = {
             "conversational": "Keep your tone natural and engaging.",
             "explanatory": "Focus on clarity and educational value.",
-            "step_by_step": "Provide clear steps and actionable guidance.",
+            "step_by_step": "Structure your response with clear steps and actionable guidance.",
             "analytical_with_context": "Reference the provided context and build your analysis upon it.",
-            "structured": "Provide a well-organized response."
+            "structured": "Organize your response logically with clear sections."
         }
         
         intent_guidance = intent_prompts.get(intent, "Provide a helpful and informative response.")
-        approach_guidance = approach_prompts.get(approach, "Provide a clear response.")
+        approach_guidance = approach_prompts.get(approach, "Structure your response clearly.")
         
         return f"{base_prompt}\n\n{intent_guidance} {approach_guidance}"
     
@@ -393,7 +393,7 @@ When presenting tabular data:
                         "status": "success",
                         "data": f"Mock result for {call_type}",
                         "timestamp": time.time(),
-                        "source": "simulation",
+                        "source": "simulation"
                     }
                 
             except Exception as e:
@@ -587,8 +587,7 @@ When presenting tabular data:
         temperature: float,
         max_tokens: Optional[int],
         request_id: str,
-        external_results: Dict[str, Any],
-        request: ChatRequest = None
+        external_results: Dict[str, Any]
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute LLM call with streaming response."""
         
@@ -609,14 +608,11 @@ When presenting tabular data:
                 external_context = self._format_external_results(external_results)
                 user_prompt = f"{user_prompt}\n\nAdditional context from external services:\n{external_context}"
             
-            # Build messages array from conversation history
-            # request parameter is available from the enclosing _execute_llm_streaming method
-            messages = self._build_messages_array(request, system_prompt, user_prompt)
-            
-            # Create LLM request with messages
+            # Create LLM request
             llm_request = LLMRequest(
                 model=model,
-                messages=messages,
+                prompt=user_prompt,
+                system_prompt=system_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
