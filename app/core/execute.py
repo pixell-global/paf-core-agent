@@ -238,7 +238,7 @@ IMPORTANT: The user is asking you to CREATE or GENERATE a table with data. DO NO
 - If the user asks for specific data (like numbers 1-500), generate that exact data
 - Format the table clearly and ensure proper alignment
 - DO NOT mention Excel, Google Sheets, or any other software
-- DO NOT provide step-by-step instructions
+- DO NOT provide step-by-Step instructions
 - ONLY generate the actual table with the requested data
 """
         
