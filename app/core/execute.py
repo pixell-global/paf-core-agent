@@ -25,7 +25,7 @@ class ExecutePhase:
     - Streaming content chunks to the client
     """
     
-    def __init__(self, settings: Settings, grpc_manager: Optional['GRPCClientManager'] = None):
+    def __init__(self, settings: Settings, grpc_manager: Optional['GRPCClientManager'] = None): # TODO: 확인 필요
         self.settings = settings
         self.logger = get_logger("execute_phase")
         self.llm_manager = LLMProviderManager(settings)
