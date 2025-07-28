@@ -64,6 +64,16 @@ class ClaudeProvider(LLMProvider):
     
     def _format_messages(self, request: LLMRequest) -> List[Dict[str, str]]:
         """Format request into Claude messages format."""
+        # If request has messages array, use it directly (excluding system messages)
+        if request.messages:
+            # Claude handles system messages separately, so filter them out
+            return [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+                if msg.role != "system"
+            ]
+        
+        # Otherwise, fall back to legacy prompt format
         messages = []
         
         # Claude doesn't use system messages in the messages array
@@ -74,6 +84,15 @@ class ClaudeProvider(LLMProvider):
         })
         
         return messages
+    
+    def _extract_system_prompt(self, request: LLMRequest) -> Optional[str]:
+        """Extract system prompt from messages or use the provided one."""
+        if request.messages:
+            # Find system message in messages array
+            system_messages = [msg for msg in request.messages if msg.role == "system"]
+            if system_messages:
+                return system_messages[0].content
+        return request.system_prompt
     
     async def stream_completion(
         self, 
@@ -108,8 +127,9 @@ class ClaudeProvider(LLMProvider):
             }
             
             # Add system prompt if provided
-            if request.system_prompt:
-                kwargs["system"] = request.system_prompt
+            system_prompt = self._extract_system_prompt(request)
+            if system_prompt:
+                kwargs["system"] = system_prompt
             
             # Create streaming completion
             stream = await self.client.messages.create(**kwargs)
@@ -216,8 +236,9 @@ class ClaudeProvider(LLMProvider):
             }
             
             # Add system prompt if provided
-            if request.system_prompt:
-                kwargs["system"] = request.system_prompt
+            system_prompt = self._extract_system_prompt(request)
+            if system_prompt:
+                kwargs["system"] = system_prompt
             
             response = await self.client.messages.create(**kwargs)
             

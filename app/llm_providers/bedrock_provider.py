@@ -81,9 +81,33 @@ class BedrockProvider(LLMProvider):
     
     def _format_claude_request(self, request: LLMRequest) -> Dict[str, Any]:
         """Format request for Claude models on Bedrock."""
-        prompt = request.prompt
-        if request.system_prompt:
-            prompt = f"Human: {request.system_prompt}\n\n{request.prompt}\n\nAssistant:"
+        # Handle messages array if present
+        if request.messages:
+            # Convert messages to Claude format
+            prompt_parts = []
+            system_prompt = None
+            
+            for msg in request.messages:
+                if msg.role == "system":
+                    system_prompt = msg.content
+                elif msg.role == "user":
+                    prompt_parts.append(f"Human: {msg.content}")
+                elif msg.role == "assistant":
+                    prompt_parts.append(f"Assistant: {msg.content}")
+            
+            # Add final Assistant: prompt
+            prompt_parts.append("Assistant:")
+            
+            # Combine with system prompt if present
+            if system_prompt:
+                prompt = f"Human: {system_prompt}\n\n{' '.join(prompt_parts)}"
+            else:
+                prompt = ' '.join(prompt_parts)
+        else:
+            # Legacy format
+            prompt = request.prompt
+            if request.system_prompt:
+                prompt = f"Human: {request.system_prompt}\n\n{request.prompt}\n\nAssistant:"
         
         return {
             "prompt": prompt,
@@ -94,9 +118,30 @@ class BedrockProvider(LLMProvider):
     
     def _format_titan_request(self, request: LLMRequest) -> Dict[str, Any]:
         """Format request for Amazon Titan models."""
-        prompt = request.prompt
-        if request.system_prompt:
-            prompt = f"{request.system_prompt}\n\nHuman: {request.prompt}\n\nAssistant:"
+        # Handle messages array if present
+        if request.messages:
+            # Convert messages to Titan format
+            prompt_parts = []
+            system_prompt = None
+            
+            for msg in request.messages:
+                if msg.role == "system":
+                    system_prompt = msg.content
+                elif msg.role == "user":
+                    prompt_parts.append(f"Human: {msg.content}")
+                elif msg.role == "assistant":
+                    prompt_parts.append(f"Assistant: {msg.content}")
+            
+            # Combine with system prompt if present
+            if system_prompt:
+                prompt = f"{system_prompt}\n\n{' '.join(prompt_parts)}\n\nAssistant:"
+            else:
+                prompt = f"{' '.join(prompt_parts)}\n\nAssistant:"
+        else:
+            # Legacy format
+            prompt = request.prompt
+            if request.system_prompt:
+                prompt = f"{request.system_prompt}\n\nHuman: {request.prompt}\n\nAssistant:"
         
         return {
             "inputText": prompt,
@@ -109,9 +154,30 @@ class BedrockProvider(LLMProvider):
     
     def _format_llama_request(self, request: LLMRequest) -> Dict[str, Any]:
         """Format request for Llama models."""
-        prompt = request.prompt
-        if request.system_prompt:
-            prompt = f"<s>[INST] <<SYS>>\n{request.system_prompt}\n<</SYS>>\n\n{request.prompt} [/INST]"
+        # Handle messages array if present
+        if request.messages:
+            # Convert messages to Llama format
+            prompt_parts = []
+            system_prompt = None
+            
+            for msg in request.messages:
+                if msg.role == "system":
+                    system_prompt = msg.content
+                elif msg.role == "user":
+                    if system_prompt and not prompt_parts:  # First user message with system
+                        prompt_parts.append(f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\n{msg.content} [/INST]")
+                        system_prompt = None  # Used
+                    else:
+                        prompt_parts.append(f"<s>[INST] {msg.content} [/INST]")
+                elif msg.role == "assistant":
+                    prompt_parts.append(msg.content)
+            
+            prompt = ' '.join(prompt_parts)
+        else:
+            # Legacy format
+            prompt = request.prompt
+            if request.system_prompt:
+                prompt = f"<s>[INST] <<SYS>>\n{request.system_prompt}\n<</SYS>>\n\n{request.prompt} [/INST]"
         
         return {
             "prompt": prompt,

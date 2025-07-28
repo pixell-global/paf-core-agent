@@ -6,7 +6,16 @@ from typing import Dict, Any, Optional
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase
 from app.settings import Settings
 from app.utils.logging_config import get_logger
+from app.utils.agent_client import AgentClient
 
+import uuid, json, httpx, asyncio
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import BaseTool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.messages import AIMessage
+from a2a.client import A2AClient as RawA2AClient
+from a2a.types import MessageSendParams, Message, Role, Part, TextPart
 
 class PlanPhase:
     """
@@ -22,7 +31,9 @@ class PlanPhase:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.logger = get_logger("plan_phase")
-    
+        # A2A 클라이언트 초기화
+        self.a2a_client = AgentClient(settings.a2a_server_url) if settings.a2a_enabled else None
+
     async def process(
         self, 
         request: ChatRequest, 
@@ -57,7 +68,7 @@ class PlanPhase:
             # Plan model selection
             model_plan = await self._plan_model_selection(request, understanding_meta, strategy)
             
-            # Plan external calls
+            # Plan external calls (including A2A agents)
             external_calls_plan = await self._plan_external_calls(request, understanding_meta, strategy)
             
             # Plan file processing approach
@@ -85,6 +96,7 @@ class PlanPhase:
                 "model_recommendation": model_plan["recommended_model"],
                 "needs_external_calls": external_calls_plan["needs_calls"],
                 "external_call_types": external_calls_plan["call_types"],
+                "a2a_agent_match": external_calls_plan.get("a2a_agent_match"),
                 "file_processing": file_processing_plan,
                 "memory_usage": memory_plan,
                 "response_structure": structure_plan["type"],
@@ -106,7 +118,8 @@ class PlanPhase:
                 request_id=request_id,
                 strategy=metadata["strategy"],
                 model=metadata["model_recommendation"],
-                needs_external_calls=metadata["needs_external_calls"]
+                needs_external_calls=metadata["needs_external_calls"],
+                a2a_agent_match=metadata.get("a2a_agent_match", {}).get("matched", False)
             )
             
             return result
@@ -126,7 +139,7 @@ class PlanPhase:
                 completed=False,
                 error=str(e)
             )
-    
+
     async def _determine_strategy(
         self, 
         request: ChatRequest, 
@@ -189,7 +202,7 @@ class PlanPhase:
                 base_strategy["complexity"] = "moderate" if base_strategy["complexity"] == "simple" else "complex"
         
         return base_strategy
-    
+
     async def _plan_model_selection(
         self, 
         request: ChatRequest, 
@@ -235,14 +248,14 @@ class PlanPhase:
             "reason": reason,
             "confidence": confidence
         }
-    
+
     async def _plan_external_calls(
         self, 
         request: ChatRequest, 
         understanding_meta: Dict[str, Any],
         strategy: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Plan external API calls (gRPC worker agents)."""
+        """Plan external API calls (gRPC worker agents and A2A agents)."""
         
         intent = understanding_meta.get("intent", "general")
         complexity = strategy["complexity"]
@@ -251,6 +264,19 @@ class PlanPhase:
         
         needs_calls = False
         call_types = []
+        a2a_agent_match = None
+        
+        # Check for A2A agent match first
+        if self.settings.a2a_enabled and self.a2a_client:
+            a2a_agent_match = await self._check_a2a_agent_match(request)
+            if a2a_agent_match and a2a_agent_match.get("matched"):
+                needs_calls = True
+                call_types.append("a2a_agent")
+                self.logger.info(
+                    "A2A agent match found",
+                    skill_name=a2a_agent_match.get("skill_name"),
+                    agent_name=a2a_agent_match.get("agent_name")
+                )
         
         # Check for specific keywords that indicate external processing needs
         message_lower = request.message.lower()
@@ -299,17 +325,189 @@ class PlanPhase:
         return {
             "needs_calls": needs_calls,
             "call_types": call_types,
+            "a2a_agent_match": a2a_agent_match,
             "estimated_calls": len(call_types),
             "parallel_execution": len(call_types) > 1,
-            "reasoning": self._get_external_call_reasoning(call_types, intent, complexity, file_count)
+            "reasoning": self._get_external_call_reasoning(call_types, intent, complexity, file_count, a2a_agent_match)
         }
-    
+
+    async def _check_a2a_agent_match(self, request: ChatRequest) -> Optional[Dict[str, Any]]:
+        """Use an LLM + LangChain agent to decide whether to invoke an A2A agent skill, and
+        if appropriate, call the skill via the A2A protocol.
+
+        The logic is inspired by the standalone `a2a_cli.py` example but adapted to run
+        inside the planning phase. It works as follows:
+        1. Fetch the agent-card (skills metadata) from the configured A2A server.
+        2. Wrap every skill from the card as a LangChain `BaseTool` that, when executed,
+           performs the actual A2A `send_message` RPC for that skill.
+        3. Build a lightweight LangChain agent (`ChatOpenAI` + prompt) and let the LLM
+           decide whether any of the tools should be invoked (``tool_choice="auto"``).
+        4. Execute the chain with the user message. If the LLM triggers a tool call,
+           we treat that as a positive match and return the tool invocation result.
+        """
+
+        # 사전 조건 검사: A2A 기능 및 OpenAI API 키가 모두 설정돼 있어야 한다.
+        if not (self.settings.a2a_enabled and self.a2a_client and self.settings.openai_api_key):
+            return None
+
+        try:
+            # 1️⃣ 에이전트 카드 조회 --------------------------------------------------
+            agent_card = await self.a2a_client.get_agent_card()
+            if not agent_card:
+                return None
+            skills = agent_card.get("skills", [])
+            if not skills:
+                return None
+
+            # 2️⃣ LangChain 도구 정의 ---------------------------------
+
+            class A2ASkillTool(BaseTool):
+                """A single A2A skill exposed as a LangChain tool."""
+
+                id: str  # skill ID
+                name: str  # skill 이름 (LangChain tool name과 동일)
+                description: str  # skill 설명
+                a2a_url: str  # 대상 A2A 서버 URL
+
+                def _run(self, **kwargs):  # sync wrapper
+                    return asyncio.run(self._arun(**kwargs))
+
+                async def _arun(self, **kwargs):
+                    """Plan 단계에서는 실제 A2A 호출을 수행하지 않는다.
+
+                    LLM 이 도구를 선택해도 여기서는 네트워크 요청을 생략하고,
+                    매칭 여부만 알려주는 더미 응답을 반환한다.
+                    """
+                    return {"status": "matched", "params": kwargs}
+
+            # LangChain tool 인스턴스화
+            tools = [
+                A2ASkillTool(
+                    id=s.get("id", ""),
+                    name=s.get("name", ""),
+                    description=s.get("description", ""),
+                    a2a_url=agent_card.get("url", ""),
+                )
+                for s in skills
+            ]
+            if not tools:
+                return None
+
+            # 3️⃣ LLM & 프롬프트 체인 -------------------------------------------------
+            llm = ChatOpenAI(
+                model=self.settings.resolved_default_model,
+                openai_api_key=self.settings.openai_api_key,
+                temperature=0.0,
+            )
+
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    "You are an orchestration agent that decides which domain skill to call. "
+                    "If none of the registered tools are relevant, answer the user's request directly. "
+                    "Only use a tool if it will help you fulfil the user's request.",
+                ),
+                ("user", "{input_text}"),
+            ])
+
+            def maybe_run_tools(ai_msg: AIMessage):
+                """실제 LangChain tool 호출을 담당."""
+                if ai_msg.additional_kwargs.get("tool_calls"):
+                    results = []
+                    called_skill = None
+                    for call in ai_msg.additional_kwargs["tool_calls"]:
+                        name = call["function"]["name"]
+                        args = json.loads(call["function"]["arguments"])
+                        called_skill = name
+                        tool = {t.name: t for t in tools}.get(name)
+                        if tool:
+                            results.append(tool.invoke(args))
+                    return {"tool_called": True, "skill_name": called_skill, "results": results}
+                # 도구 호출이 없으면 LLM 응답만 반환
+                return {"tool_called": False, "response": ai_msg.content}
+
+            agent_chain = (
+                {"input_text": RunnablePassthrough()}  # 입력 매핑
+                | prompt
+                | llm.bind_tools(tools, tool_choice="auto")
+                | RunnableLambda(maybe_run_tools)
+            )
+
+            chain_output = await agent_chain.ainvoke(
+                {"input_text": request.message, "user_id": getattr(request, "user_id", None)}
+            )
+
+            # 4️⃣ 반환 형식 표준화 ------------------------------------------------------
+            if chain_output.get("tool_called"):
+                skill_name = chain_output.get("skill_name")
+                skill_id = ""
+                skill_data: Dict[str, Any] = {}
+                for s in skills:
+                    if s.get("name") == skill_name:
+                        skill_id = s.get("id", "")
+                        skill_data = s
+                        break
+
+                # 도구 호출 결과(파라미터 등)는 리스트 형태로 results 에 담겨 있다.
+                tool_results = chain_output.get("results", []) or []
+                extracted_params = {}
+                if tool_results and isinstance(tool_results[0], dict):
+                    extracted_params = tool_results[0].get("params", {})
+
+                return {
+                    "matched": True,
+                    "skill_name": skill_name,
+                    "skill_id": skill_id,
+                    "skill_data": skill_data,
+                    "parameters": extracted_params,
+                    "agent_name": agent_card.get("name", "Unknown"),
+                    "agent_url": agent_card.get("url", ""),
+                }
+            return {"matched": False}
+
+        except Exception as e:  # pragma: no cover
+            self.logger.error("Error during LLM-based A2A skill check", error=str(e), exc_info=True)
+            return None
+
+    def _is_skill_match(self, user_message: str, skill_name: str, skill_description: str) -> bool:
+        """Check if user message matches a specific skill."""
+        # 스킬 이름 및 설명에서 키워드 추출
+        skill_keywords = []
+        
+        # 스킬 이름에서 키워드 추출
+        if skill_name:
+            skill_keywords.extend(skill_name.lower().split('_'))
+            skill_keywords.extend(skill_name.lower().split())
+        
+        # 스킬 설명에서 키워드 추출
+        if skill_description:
+            # "create new product" -> ["create", "new", "product"]
+            desc_words = skill_description.lower().split()
+            skill_keywords.extend(desc_words)
+        
+        # 사용자 메시지와 매칭
+        for keyword in skill_keywords:
+            if len(keyword) > 2 and keyword in user_message:  # 2글자 이상 키워드만 확인
+                return True
+        
+        # 특정 패턴 매칭
+        if "create" in skill_name.lower() or "create" in skill_description.lower():
+            if any(word in user_message for word in ["만들어", "생성", "create", "add", "추가"]):
+                return True
+        
+        if "product" in skill_name.lower() or "product" in skill_description.lower():
+            if any(word in user_message for word in ["제품", "product", "상품"]):
+                return True
+        
+        return False
+
     def _get_external_call_reasoning(
         self, 
         call_types: list, 
         intent: str, 
         complexity: str, 
-        file_count: int
+        file_count: int,
+        a2a_agent_match: Optional[Dict[str, Any]] = None
     ) -> str:
         """Generate reasoning for external call decisions."""
         if not call_types:
@@ -318,7 +516,12 @@ class PlanPhase:
         reasons = []
         
         for call_type in call_types:
-            if call_type == "code_analysis":
+            if call_type == "a2a_agent":
+                if a2a_agent_match and a2a_agent_match.get("matched"):
+                    skill_name = a2a_agent_match.get("skill_name", "unknown")
+                    agent_name = a2a_agent_match.get("agent_name", "unknown")
+                    reasons.append(f"A2A agent '{agent_name}' skill '{skill_name}' matches user request")
+            elif call_type == "code_analysis":
                 reasons.append("specialized code analysis required")
             elif call_type == "file_processing":
                 reasons.append(f"processing {file_count} files efficiently")
@@ -611,7 +814,17 @@ class PlanPhase:
             summary_parts.append(f"Memory: {memory_plan['approach']} ({memory_plan['message_count']} msgs)")
         
         if external_calls_plan["needs_calls"]:
-            summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
+            call_types = external_calls_plan['call_types']
+            # A2A 에이전트 정보 포함
+            if "a2a_agent" in call_types:
+                a2a_match = external_calls_plan.get("a2a_agent_match", {})
+                if a2a_match and a2a_match.get("matched"):
+                    skill_name = a2a_match.get("skill_name", "unknown")
+                    summary_parts.append(f"External calls: A2A agent skill '{skill_name}'")
+                else:
+                    summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
+            else:
+                summary_parts.append(f"External calls: {', '.join(external_calls_plan['call_types'])}")
         
         summary_parts.append(f"Est. tokens: {execution_params['estimated_output_tokens']}")
         

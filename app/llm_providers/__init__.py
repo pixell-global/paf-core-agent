@@ -3,6 +3,7 @@
 from app.llm_providers.base import (
     LLMProvider,
     LLMProviderType,
+    LLMMessage,
     LLMRequest,
     LLMResponse,
     LLMUsage,
@@ -36,6 +37,7 @@ __all__ = [
     # Base classes
     "LLMProvider",
     "LLMProviderType", 
+    "LLMMessage",
     "LLMRequest",
     "LLMResponse",
     "LLMUsage",
