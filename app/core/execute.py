@@ -14,6 +14,8 @@ from app.settings import Settings
 from app.utils.agent_client import AgentClient
 
 
+from app.core.activity_manger import ActivityManager, Activity, ActivityContents
+
 class ExecutePhase:
     """
     Execution phase of the UPEE loop.
@@ -509,7 +511,14 @@ When presenting tabular data:
 
         try:
             result = await self.a2a_client.send_message(message_payload)
-
+            
+            ActivityManager.add_activity(Activity(
+                contents=ActivityContents(
+                    type="html",
+                    data=result.get("result", {}).get("metadata", {})
+                )
+            ))
+            
             return {
                 "status": result.get("status", "success"),
                 # result 내부 구조: {status:..., response:...}
