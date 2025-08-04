@@ -6,8 +6,10 @@ import json
 import time
 from typing import Any, Optional
 from app.utils.logging_config import get_logger
-from a2a.types import Message, Part, Role, SendMessageRequest, TextPart, MessageSendParams
+from a2a.types import Message, Part, Role, SendMessageRequest, TextPart, FilePart, MessageSendParams
 from a2a.client import A2AClient
+from app.schemas import FileContent
+from a2a.types import FileWithBytes
 import uuid
 
 
@@ -79,14 +81,23 @@ class AgentClient:
 		if message.get("type") == "skill_request": # TODO: SKILL request가 아닌경우 처리
 			try:
 				async with httpx.AsyncClient(timeout=None) as httpx_client:
+					file: FileContent
 					client = A2AClient(url=self.server_url, httpx_client=httpx_client)
 				
+					message_parts = [Part(TextPart(text=json.dumps(message.get("parameters", {}), ensure_ascii=False)))]
+					files = message.get("files", [])
+					for file in files:
+						file_name = file.file_name
+						file_content = file.content
+						bytes_content = file_content.encode("utf-8")
+						message_parts.append(Part(FilePart(file=FileWithBytes(bytes=bytes_content, metadata={"file_name": file_name}))))
+
 					payload = SendMessageRequest(
 						id=str(uuid.uuid4()),
 						params=MessageSendParams(
 							message=Message(
 								role=Role.user,
-								parts=[Part(TextPart(text=json.dumps(message.get("parameters", {}), ensure_ascii=False)))],
+								parts=message_parts,
 								messageId=str(uuid.uuid4()),
 								metadata={"skill": message.get("skill_id"), "params": message.get("parameters", {})}
 							)

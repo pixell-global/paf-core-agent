@@ -507,22 +507,24 @@ When presenting tabular data:
             # 사용자가 입력한 전체 메시지를 그대로 전달 (파라미터가 필요한 경우 추후 확장)
             "parameters": match_info.get("parameters", {}),
             "user_message": request.message,
+            "files": request.files,
         }
 
         try:
-            result = await self.a2a_client.send_message(message_payload)
-            
+            response = await self.a2a_client.send_message(message_payload)
+            result: dict = response.get("result", {})
+
             ActivityManager.add_activity(Activity(
                 contents=ActivityContents(
                     type="html",
-                    data=result.get("result", {}).get("metadata", {})
+                    data=result.get("metadata", {})
                 )
             ))
             
             return {
                 "status": result.get("status", "success"),
                 # result 내부 구조: {status:..., response:...}
-                "data": result.get("response", result),
+                "data": result.get("parts", result),
                 "timestamp": time.time(),
                 "source": "a2a_agent",
             }
@@ -614,7 +616,7 @@ When presenting tabular data:
             # Extract system prompt and user prompt
             system_prompt, user_prompt = self._extract_prompts(prompt)
             
-            # Add external results to the prompt if available
+            # Add external results to the prompt if available TODO: a2a 결과 전달 방식 논의 필요
             if external_results:
                 external_context = self._format_external_results(external_results)
                 user_prompt = f"{user_prompt}\n\nAdditional context from external services:\n{external_context}"
