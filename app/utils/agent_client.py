@@ -86,7 +86,7 @@ class AgentClient:
 				
 					message_parts = [Part(TextPart(text=json.dumps(message.get("parameters", {}), ensure_ascii=False)))]
 					files = message.get("files", [])
-					for file in files:
+					for file in files or []:
 						file_name = file.file_name
 						file_content = file.content
 						bytes_content = file_content.encode("utf-8")
