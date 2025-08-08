@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any, Optional
 from app.utils.logging_config import get_logger
-from a2a.types import Message, Part, Role, SendMessageRequest, TextPart, FilePart, MessageSendParams
+from a2a.types import Message, Part, Role, SendMessageRequest, TextPart, FilePart, MessageSendParams, SendMessageResponse, JSONRPCErrorResponse, SendMessageSuccessResponse
 from a2a.client import A2AClient
 from app.schemas import FileContent
 from a2a.types import FileWithBytes
@@ -75,7 +75,7 @@ class AgentClient:
 		# 단일 에이전트의 경우 카드 ID와 상관없이 동일한 카드 반환
 		return await self.get_agent_card()
 	
-	async def send_message(self, message: dict[str, Any]) -> dict[str, Any]:
+	async def send_message(self, message: dict[str, Any]) -> JSONRPCErrorResponse | SendMessageSuccessResponse:
 		"""A2A 서버로 메시지를 전송합니다"""
 
 		if message.get("type") == "skill_request": # TODO: SKILL request가 아닌경우 처리
@@ -105,7 +105,7 @@ class AgentClient:
 					)
 
 					resp = await client.send_message(payload, http_kwargs={"timeout": None})
-					return resp.model_dump()
+					return resp.root
 
 			except Exception as e:
 				self.logger.error(f"Error sending message via official A2A SDK: {e}")

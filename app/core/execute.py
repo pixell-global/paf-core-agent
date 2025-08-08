@@ -3,6 +3,7 @@
 import asyncio
 import time
 from typing import Dict, Any, Optional, AsyncGenerator, List
+from a2a.types import TextPart
 
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase, EventType, ContentEvent
 from app.llm_providers import LLMProviderManager, LLMRequest, LLMProviderError
@@ -218,7 +219,7 @@ class ExecutePhase:
         """Build the system prompt based on the execution plan."""
         
         base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide accurate and helpful responses."
-        
+      
         # Add language instruction if not English
         if language_info.get("language_code", "en") != "en":
             language_instruction = f"""
@@ -333,21 +334,39 @@ When presenting tabular data:
         self,
         request: ChatRequest,
         system_prompt: str,
-        user_prompt: str
+        user_prompt: str,
+        external_context: str
     ) -> List[LLMMessage]:
         """Build messages array from conversation history and current request."""
         messages = []
-        
+
         # Add system message
         messages.append(LLMMessage(role="system", content=system_prompt))
         
         # Add conversation history if available
         if request.history:
-            for msg in request.history:
+            for msg in request.history[:-1]: # -1은 최근 사용자 쿼리이며 마지막에 append되기에 제외
                 messages.append(LLMMessage(role=msg.role, content=msg.content))
-        
-        # Add current user message with file context
-        messages.append(LLMMessage(role="user", content=user_prompt))
+
+        # Add external context if available
+        if external_context:
+            # TODO: 사용자 쿼리 + 외부도구 결과를 모두 전달할 방법 연구 필요
+            # 현재 쿼리 + 외부도구를 모두 전달할때 외부도구 결과에 실 데이터가 없고 피드백(Success, Please check Activity section)만 있는경우
+            # 외부 도구 호출 실패로 LLM이 인식함
+            # Final instruction: use only the provided results; do not generate content beyond them
+
+            messages.append(LLMMessage(role="user", content=f'''
+[\nExternal tool results for  request]\n{external_context}
+The above external tool results are already retrieved and reliable.
+Let me explain the external tool results simply.
+exmaple:
+Please check Activity section.
+'''
+        ))
+
+        else:
+            # Add current user message with file context
+            messages.append(LLMMessage(role="user", content=user_prompt))
         
         return messages
     
@@ -512,19 +531,23 @@ When presenting tabular data:
 
         try:
             response = await self.a2a_client.send_message(message_payload)
-            result: dict = response.get("result", {})
+            result = response.result
 
+            # Activity 추가
             ActivityManager.add_activity(Activity(
                 contents=ActivityContents(
                     type="html",
-                    data=result.get("metadata", {})
+                    data=result.metadata
                 )
             ))
             
+            #A2A response parts 병합
+            parts: list[TextPart] = result.parts or []
+            merged_text = "".join([part.root.text for part in parts])
+
             return {
-                "status": result.get("status", "success"),
-                # result 내부 구조: {status:..., response:...}
-                "data": result.get("parts", result),
+                "status": "success",
+                "data": merged_text,
                 "timestamp": time.time(),
                 "source": "a2a_agent",
             }
@@ -616,14 +639,16 @@ When presenting tabular data:
             # Extract system prompt and user prompt
             system_prompt, user_prompt = self._extract_prompts(prompt)
             
-            # Add external results to the prompt if available TODO: a2a 결과 전달 방식 논의 필요
+            # Add external results to the prompt if available
+            
+            external_context = ""
+
             if external_results:
                 external_context = self._format_external_results(external_results)
-                user_prompt = f"{user_prompt}\n\nAdditional context from external services:\n{external_context}"
             
             # Build messages array from conversation history
             # request parameter is available from the enclosing _execute_llm_streaming method
-            messages = self._build_messages_array(request, system_prompt, user_prompt)
+            messages = self._build_messages_array(request, system_prompt, user_prompt, external_context)
             
             # Create LLM request with messages
             llm_request = LLMRequest(
