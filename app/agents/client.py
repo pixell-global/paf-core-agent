@@ -145,6 +145,11 @@ class A2AClient:
             "context": request.context,
             "priority": request.priority
         }
+        # Attach UI capabilities if present in context to top-level metadata for agents expecting it in metadata
+        if isinstance(request.context, dict) and "ui.capabilities" in request.context:
+            caps = request.context.get("ui.capabilities")
+            if isinstance(data.get("context"), dict):
+                data["context"]["ui.capabilities"] = caps
         
         # Send request with timeout
         timeout = aiohttp.ClientTimeout(total=request.timeout_ms / 1000.0)

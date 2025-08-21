@@ -351,3 +351,9 @@ For questions and support:
 ✅ **Health Monitoring** - Comprehensive health checks and metrics  
 
 **Status**: ✅ Production Ready - Core functionality complete 
+
+## License
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+For organizations that do not wish to comply with AGPL-3.0 requirements,
+commercial licensing options are available. Contact us at  engineering@pixell.global .

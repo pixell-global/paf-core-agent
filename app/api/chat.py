@@ -118,6 +118,7 @@ async def upee_chat_stream(
             
             elif event_type == EventType.CONTENT:
                 # Stream content events
+                # Pass through content, including UI envelopes if present
                 yield await create_sse_event(
                     EventType.CONTENT,
                     event["data"],

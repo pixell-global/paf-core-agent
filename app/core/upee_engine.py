@@ -3,6 +3,7 @@
 import asyncio
 import time
 import uuid
+import json
 from typing import AsyncGenerator, Dict, Any, Optional, List
 
 from app.schemas import (
@@ -315,6 +316,11 @@ class UPEEEngine:
                 "model": request.model,
                 "context_window": request.context_window_size
             }
+            # Pass through client UI capabilities to agent apps (if provided)
+            if request.metadata and isinstance(request.metadata, dict):
+                ui_caps = request.metadata.get("ui.capabilities")
+                if ui_caps is not None:
+                    context["ui.capabilities"] = ui_caps
             
             agent_decision = await self.agent_manager.should_use_agent(
                 UPEEPhase.UNDERSTAND, context
@@ -335,6 +341,48 @@ class UPEEEngine:
                     context=context
                 )
                 
+                # Forward UI envelopes (ui.render / ui.patch) from agent to client
+                try:
+                    if agent_response and agent_response.status == "success":
+                        ui_envelopes = []
+                        # metadata["ui"] form (treated as ui.render)
+                        if agent_response.metadata and isinstance(agent_response.metadata, dict):
+                            ui_spec = agent_response.metadata.get("ui")
+                            if isinstance(ui_spec, dict) and ui_spec.get("manifest") and ui_spec.get("view"):
+                                ui_envelopes.append({"type": "ui.render", **ui_spec})
+                        # envelope form in result
+                        if agent_response.result and isinstance(agent_response.result, dict):
+                            result_type = agent_response.result.get("type")
+                            if result_type in ("ui.render", "ui.patch"):
+                                ui_envelopes.append(agent_response.result)
+                        # Emit each envelope as a content event for the client to render
+                        for env in ui_envelopes:
+                            yield {
+                                "event": EventType.CONTENT,
+                                "data": json.dumps({
+                                    "ui": env,
+                                    "agent_id": agent_decision.agent_id,
+                                    "a2a_request_id": agent_response.request_id
+                                })
+                            }
+                        # Forward action.result if present
+                        if agent_response.result and isinstance(agent_response.result, dict):
+                            if agent_response.result.get("type") == "action.result":
+                                yield {
+                                    "event": EventType.CONTENT,
+                                    "data": json.dumps({
+                                        "action_result": agent_response.result,
+                                        "agent_id": agent_decision.agent_id,
+                                        "a2a_request_id": agent_response.request_id
+                                    })
+                                }
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to forward UI envelope",
+                        request_id=self.current_request_id,
+                        error=str(e)
+                    )
+
                 if agent_response.status == "success":
                     # Merge agent results with local processing
                     result = await self.understand_phase.process(
@@ -408,6 +456,11 @@ class UPEEEngine:
                 "message": request.message,
                 "model": request.model
             }
+            # Pass through client UI capabilities to agent apps (if provided)
+            if request.metadata and isinstance(request.metadata, dict):
+                ui_caps = request.metadata.get("ui.capabilities")
+                if ui_caps is not None:
+                    context["ui.capabilities"] = ui_caps
             
             agent_decision = await self.agent_manager.should_use_agent(
                 UPEEPhase.PLAN, context
@@ -431,10 +484,52 @@ class UPEEEngine:
                     context=context
                 )
                 
+                # Forward UI envelopes (ui.render / ui.patch) from agent to client
+                try:
+                    if agent_response and agent_response.status == "success":
+                        ui_envelopes = []
+                        # metadata["ui"] form (treated as ui.render)
+                        if agent_response.metadata and isinstance(agent_response.metadata, dict):
+                            ui_spec = agent_response.metadata.get("ui")
+                            if isinstance(ui_spec, dict) and ui_spec.get("manifest") and ui_spec.get("view"):
+                                ui_envelopes.append({"type": "ui.render", **ui_spec})
+                        # envelope form in result
+                        if agent_response.result and isinstance(agent_response.result, dict):
+                            result_type = agent_response.result.get("type")
+                            if result_type in ("ui.render", "ui.patch"):
+                                ui_envelopes.append(agent_response.result)
+                        # Emit each envelope as a content event for the client to render
+                        for env in ui_envelopes:
+                            yield {
+                                "event": EventType.CONTENT,
+                                "data": json.dumps({
+                                    "ui": env,
+                                    "agent_id": agent_decision.agent_id,
+                                    "a2a_request_id": agent_response.request_id
+                                })
+                            }
+                        # Forward action.result if present
+                        if agent_response.result and isinstance(agent_response.result, dict):
+                            if agent_response.result.get("type") == "action.result":
+                                yield {
+                                    "event": EventType.CONTENT,
+                                    "data": json.dumps({
+                                        "action_result": agent_response.result,
+                                        "agent_id": agent_decision.agent_id,
+                                        "a2a_request_id": agent_response.request_id
+                                    })
+                                }
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to forward UI envelope",
+                        request_id=self.current_request_id,
+                        error=str(e)
+                    )
+
                 if agent_response.status == "success":
                     # Merge agent results with local processing
                     result = await self.plan_phase.process(
-                        request, 
+                        request,
                         self.current_request_id,
                         understanding_result,
                         agent_enhancement=agent_response.result
@@ -451,9 +546,9 @@ class UPEEEngine:
                         understanding_result
                     )
             else:
-                # Normal local processing
+                # Normal local processing when no external agent is used
                 result = await self.plan_phase.process(
-                    request, 
+                    request,
                     self.current_request_id,
                     understanding_result
                 )

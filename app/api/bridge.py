@@ -45,6 +45,13 @@ class StatusUpdateRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class UiEventRequest(BaseModel):
+    event: Dict[str, Any]
+    target_agent_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+
+
 def get_bridge() -> A2ABridge:
     """Get the bridge instance."""
     global bridge_instance
@@ -232,3 +239,33 @@ async def test_echo_message(
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to send test message: {str(e)}")
+
+
+@router.post("/ui/event")
+async def forward_ui_event(request: UiEventRequest, db: AsyncSession = Depends(get_db)):
+    """Accept a ui.event envelope from client and forward to target agent.
+
+    Returns action.result from the agent if available.
+    """
+    try:
+        bridge = get_bridge()
+        if not isinstance(request.event, dict) or request.event.get("type") != "ui.event":
+            raise HTTPException(status_code=400, detail="Invalid ui.event envelope")
+
+        payload = request.event
+        message = await bridge.send_message(
+            message_type=MessageType.COORDINATION,
+            target_agent_id=request.target_agent_id,
+            payload=payload,
+            priority=MessagePriority.NORMAL,
+            conversation_id=request.conversation_id,
+        )
+
+        return {
+            "status": "sent",
+            "message_id": message.id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to forward ui.event: {str(e)}")
