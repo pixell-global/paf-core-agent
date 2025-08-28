@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Dict, Any, Optional, AsyncGenerator, List
 from a2a.types import TextPart
-
+from a2a.types import SendMessageSuccessResponse
 from app.schemas import ChatRequest, UPEEResult, UPEEPhase, EventType, ContentEvent
 from app.llm_providers import LLMProviderManager, LLMRequest, LLMProviderError
 from app.llm_providers.base import LLMMessage
@@ -531,6 +531,9 @@ Please check Activity section.
 
         try:
             response = await self.a2a_client.send_message(message_payload)
+            if type(response) != SendMessageSuccessResponse:
+                raise Exception(f"A2A agent call failed")
+            
             result = response.result
 
             # Activity 추가
@@ -543,7 +546,7 @@ Please check Activity section.
             
             #A2A response parts 병합
             parts: list[TextPart] = result.parts or []
-            merged_text = "".join([part.root.text for part in parts])
+            merged_text = "".join([part.root.text for part in parts if type(part.root) == TextPart])
 
             return {
                 "status": "success",
@@ -559,12 +562,12 @@ Please check Activity section.
                 error=str(e),
                 exc_info=True,
             )
-            return {
-                "status": "error",
-                "error": str(e),
-                "timestamp": time.time(),
-                "source": "a2a_agent",
-            }
+            # return {
+            #     "status": "error",
+            #     "error": str(e),
+            #     "timestamp": time.time(),
+            #     "source": "a2a_agent",
+            # }
     
     def _prepare_task_payload(
         self,
