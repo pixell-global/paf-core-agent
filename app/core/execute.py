@@ -15,7 +15,7 @@ from app.settings import Settings
 from app.utils.agent_client import AgentClient
 
 
-from app.core.activity_manger import ActivityManager, Activity, ActivityContents
+from app.core.activity_manger import ActivityManager, ActivityContents
 
 class ExecutePhase:
     """
@@ -43,8 +43,9 @@ class ExecutePhase:
         self, 
         request: ChatRequest, 
         request_id: str,
+        organization_id: str,
         understanding_result: Optional[UPEEResult] = None,
-        plan_result: Optional[UPEEResult] = None
+        plan_result: Optional[UPEEResult] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process the execution phase with streaming.
@@ -103,7 +104,7 @@ class ExecutePhase:
             
             # Execute external calls if needed
             external_results = await self._execute_external_calls(
-                request, request_id, plan_meta
+                request, request_id, plan_meta, organization_id
             )
             
             # Execute LLM call with streaming
@@ -374,7 +375,8 @@ Please check Activity section.
         self,
         request: ChatRequest,
         request_id: str,
-        plan_meta: Dict[str, Any]
+        plan_meta: Dict[str, Any],
+        organization_id: str
     ) -> Dict[str, Any]:
         """Execute external gRPC calls if needed."""
         
@@ -395,7 +397,7 @@ Please check Activity section.
 
                 # 1) A2A 에이전트 호출 처리
                 if call_type == "a2a_agent":
-                    result = await self._execute_a2a_agent(request, request_id, plan_meta)
+                    result = await self._execute_a2a_agent(request, request_id, plan_meta, organization_id)
                     external_results[call_type] = result
                 # 2) gRPC 워커 작업 처리
                 elif self.grpc_manager and call_type in [
@@ -498,6 +500,7 @@ Please check Activity section.
         request: ChatRequest,
         request_id: str,
         plan_meta: Dict[str, Any],
+        organization_id: str
     ) -> Dict[str, Any]:
         """실제 A2A 에이전트(스킬)를 호출합니다."""
 
@@ -536,13 +539,16 @@ Please check Activity section.
             
             result = response.result
 
-            # Activity 추가
-            ActivityManager.add_activity(Activity(
-                contents=ActivityContents(
-                    type="html",
-                    data=result.metadata
+            # Activity 추가 (organization_id는 request.metadata에서 수신)
+            org_id = organization_id
+            if org_id:
+                await ActivityManager.add_activity(
+                    organization_id=org_id,
+                    contents=ActivityContents(
+                        type="url",
+                        data=result.metadata
+                    )
                 )
-            ))
             
             #A2A response parts 병합
             parts: list[TextPart] = result.parts or []

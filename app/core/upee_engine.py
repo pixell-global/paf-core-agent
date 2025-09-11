@@ -509,6 +509,7 @@ class UPEEEngine:
             async for event in self.execute_phase.process(
                 request,
                 self.current_request_id,
+                request.organization_id,
                 self.phase_results.get(UPEEPhase.UNDERSTAND),
                 self.phase_results.get(UPEEPhase.PLAN)
             ):

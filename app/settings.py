@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import List, Optional, Dict, Any
 
-from pydantic import Field
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     security_headers_enabled: bool = Field(default=True, description="Enable security headers")
     audit_logging_enabled: bool = Field(default=True, description="Enable audit logging")
     input_validation_enabled: bool = Field(default=True, description="Enable input validation middleware")
+
+    # Database (supports both uppercase and lowercase env names)
+    db_host: Optional[str] = Field(default=None, validation_alias=AliasChoices("DB_HOST", "db_host"))
+    db_user: Optional[str] = Field(default=None, validation_alias=AliasChoices("DB_USER", "db_user"))
+    db_password: Optional[str] = Field(default=None, validation_alias=AliasChoices("DB_PASSWORD", "db_password"))
+    db_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("DB_NAME", "db_name"))
     
     # LLM Provider Configuration
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
