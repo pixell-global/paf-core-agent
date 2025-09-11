@@ -6,7 +6,7 @@ These models represent the fundamental data structures of the application.
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, Text, DateTime, Boolean, Float, JSON, ForeignKey
+from sqlalchemy import String, Text, DateTime, Boolean, Float, JSON, ForeignKey, CHAR
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -211,3 +211,21 @@ class APIKey(Base):
     
     def __repr__(self) -> str:
         return f"<APIKey(id={self.id}, name='{self.name}', user_id={self.user_id})>"
+
+
+class Activity(Base):
+    """
+    Activity model.
+    - __tablename__: activity
+    - id: CHAR(36)
+    - organization_id: CHAR(36)
+    - activity_contents: TEXT (stores JSON string)
+    """
+    __tablename__ = "activity"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(CHAR(36), index=True, nullable=False)
+    activity_contents: Mapped[str] = mapped_column(Text, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<Activity(id={self.id}, organization_id={self.organization_id})>"

@@ -57,7 +57,8 @@ class FileContext(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request payload."""
     message: str = Field(description="User message")
-    show_thinking: bool = Field(default=False, description="Show thinking events")
+    show_thinking: bool = Field(default=False, description="Show thinking events"),
+    organization_id: Optional[str] = Field(default="5d1c6e27-852f-438b-8f69-82dd5b409f5a", description="Organization ID")
     files: Optional[List[Union[FileContext, FileContent]]] = Field(default=None, description="File contexts (legacy and new format)")
     history: Optional[List[ConversationMessage]] = Field(default=None, description="Conversation history for short-term memory")
     model: Optional[str] = Field(default=None, description="Specific model to use")
