@@ -1,5 +1,19 @@
 """
-Main FastAPI application for PAF Core Agent.
+Main FastAPI application for PAF Core Agent - DEVELOPMENT MODE ONLY
+
+⚠️  IMPORTANT: This file is NOT used when running as an APKG package via PAR.
+    When deployed as APKG, PAR invokes src.par_adapter instead.
+
+    This file is kept for:
+    - Local development and testing
+    - Running the agent standalone (non-APKG mode)
+
+    To run in development mode:
+        python -m src.main
+
+    To package and deploy as APKG:
+        pixell build
+        pixell deploy
 """
 
 import os
@@ -77,8 +91,10 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    print("⚠️  Running in DEVELOPMENT mode - not for production")
+    print("✅ For production, use: pixell build && pixell deploy")
     uvicorn.run(
-        "app.main:app",
+        "src.main:app",
         host="0.0.0.0",
         port=8000,
         reload=True if os.getenv("DEBUG") == "true" else False
