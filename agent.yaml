@@ -1,4 +1,4 @@
-version: "0.2.0"
+version: "1.0.1"
 name: "paf-core-agent"
 display_name: "PAF Core Agent"
 description: "Intelligent orchestrator with UPEE (Understand-Plan-Execute-Evaluate) loop for multi-agent coordination"
@@ -32,12 +32,15 @@ runtime: "python3.11"
 environment:
   PYTHONUNBUFFERED: "1"
   DEBUG: "${DEBUG:-false}"
+  OPENAI_API_KEY: "${OPENAI_API_KEY}"
+  OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o}"
+  A2A_AGENT_APPS: "${A2A_AGENT_APPS}"
 
 # Dependencies will be read from requirements.txt
 
 # Extended metadata
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   homepage: "https://github.com/pixell/paf-core-agent"
   extensive_description: |
     PAF Core Agent is an intelligent orchestrator implementing the UPEE (Understand-Plan-Execute-Evaluate)
