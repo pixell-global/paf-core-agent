@@ -19,6 +19,8 @@ from src.utils.logging_config import get_logger, log_upee_phase
 from src.settings import Settings
 from src.utils.agent_client import AgentClient
 from src.utils.a2a_util import run
+from src.langgraph_upee import execute_upee_graph, UPEEInput
+from src.llm_providers import LLMProviderManager
 
 class UPEEEngine:
     """
@@ -93,7 +95,13 @@ class UPEEEngine:
 
         #Legacy A2A Client
         self.a2a_client = a2a_client or AgentClient(settings.a2a_server_url)
-    
+
+        # LangGraph UPEE (new AI-native routing)
+        self._use_langgraph = settings.use_langgraph_upee if hasattr(settings, 'use_langgraph_upee') else False
+        if self._use_langgraph:
+            self.llm_manager = LLMProviderManager(settings)
+            self.logger.info("UPEE Engine configured to use LangGraph AI-native routing")
+
     async def startup(self):
         """Start the UPEE engine and its components."""
         # Only start agent_manager if using legacy mode (not multi-agent mode)
@@ -143,16 +151,21 @@ class UPEEEngine:
         
         try:
             self.logger.info(
-                "Starting UPEE processing with retry support",
+                "Starting UPEE processing",
                 request_id=request_id,
                 message_preview=request.message[:100],
                 show_thinking=request.show_thinking,
-                max_retries=self.max_retries
+                use_langgraph=self._use_langgraph
             )
-            
-            # Run UPEE loop with retry mechanism
-            async for event in self._run_upee_loop_with_retries(request):
-                yield event
+
+            # Route to LangGraph or legacy UPEE loop
+            if self._use_langgraph:
+                async for event in self._process_with_langgraph(request, request_id):
+                    yield event
+            else:
+                # Run legacy UPEE loop with retry mechanism
+                async for event in self._run_upee_loop_with_retries(request):
+                    yield event
             
             # Generate final completion event
             duration = time.time() - start_time
@@ -179,7 +192,106 @@ class UPEEEngine:
                 }
             }
             yield error_event
-    
+
+    async def _process_with_langgraph(
+        self,
+        request: ChatRequest,
+        request_id: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Process request using LangGraph AI-native routing.
+
+        This is the new AI-powered UPEE loop that uses LangGraph for intelligent routing.
+        """
+        try:
+            # Show thinking event if requested
+            if request.show_thinking:
+                yield {
+                    "event": EventType.THINKING,
+                    "data": {
+                        "phase": "upee",
+                        "thinking": "🧠 Starting AI-native UPEE processing with LangGraph...",
+                        "timestamp": time.time()
+                    }
+                }
+
+            # Convert ChatRequest to UPEEInput
+            upee_input: UPEEInput = {
+                "user_message": request.message,
+                "request_id": request_id,
+                "files": [f.dict() for f in request.files] if request.files else None,
+                "conversation_history": [h.dict() for h in request.history] if request.history else None,
+                "model": request.model,
+                "show_thinking": request.show_thinking,
+                "temperature": request.temperature
+            }
+
+            # Execute LangGraph
+            output = await execute_upee_graph(upee_input, self.settings, self.llm_manager)
+
+            # Show routing decision if requested
+            if request.show_thinking and output.get("routing_decision"):
+                routing_msg = f"🎯 AI Routing Decision: {output['routing_decision']}"
+                if output.get("selected_agent_name"):
+                    routing_msg += f" → {output['selected_agent_name']}"
+                routing_msg += f" (confidence: {output.get('quality_score', 0):.2f})"
+
+                yield {
+                    "event": EventType.THINKING,
+                    "data": {
+                        "phase": "routing",
+                        "thinking": routing_msg,
+                        "timestamp": time.time()
+                    }
+                }
+
+            # Yield content event with response
+            if output.get("response"):
+                yield {
+                    "event": EventType.CONTENT,
+                    "data": {
+                        "content": output["response"],
+                        "timestamp": time.time(),
+                        "metadata": {
+                            "routing": output.get("routing_decision"),
+                            "agent": output.get("selected_agent_name"),
+                            "quality": output.get("quality_score")
+                        }
+                    }
+                }
+
+            # Store result for completion event
+            self.phase_results[UPEEPhase.EVALUATE] = UPEEResult(
+                phase=UPEEPhase.EVALUATE,
+                content=output.get("response", ""),
+                metadata={
+                    "quality_score": output.get("quality_score", 0.0),
+                    "routing_decision": output.get("routing_decision"),
+                    "selected_agent": output.get("selected_agent_name"),
+                    "error": output.get("error")
+                },
+                completed=True
+            )
+
+        except Exception as e:
+            self.logger.error(
+                "LangGraph processing failed",
+                request_id=request_id,
+                error=str(e),
+                exc_info=True
+            )
+
+            # Return error event
+            yield {
+                "event": EventType.ERROR,
+                "data": {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "timestamp": time.time(),
+                    "request_id": request_id
+                }
+            }
+
     async def _run_upee_loop_with_retries(
         self, 
         request: ChatRequest

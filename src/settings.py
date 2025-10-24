@@ -1,17 +1,26 @@
 """Application settings and configuration."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Get the directory where this file is located (src/)
+_SETTINGS_DIR = Path(__file__).parent
+# Go up one level to get the agent root directory
+_AGENT_ROOT = _SETTINGS_DIR.parent
+# Path to .env file in the agent root
+_ENV_FILE = _AGENT_ROOT / ".env"
+
+
 class Settings(BaseSettings):
     """Application settings."""
-    
+
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE) if _ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
@@ -60,12 +69,48 @@ class Settings(BaseSettings):
     default_model: str = Field(default="gpt-4o", description="Default LLM model")
     show_thinking_default: bool = Field(default=False, description="Show thinking events by default")
     
-    # A2A Server Configuration
+    # A2A Server Configuration (Legacy - single agent)
     a2a_server_url: str = Field(default="http://localhost:9999", description="A2A 서버의 엔드포인트 URL")
     a2a_enabled: bool = Field(default=True, description="A2A 기능 활성화 여부")
     a2a_agent_card: Optional[str] = Field(default=None, description="A2A 에이전트 카드 ID")
     a2a_agent_url: Optional[str] = Field(default=None, description="A2A 에이전트 URL")
     a2a_timeout: int = Field(default=10, description="A2A 요청 타임아웃 (초)")
+
+    # Multi-Agent App Configuration
+    a2a_agent_apps: List[Dict[str, Any]] = Field(
+        default=[
+            {
+                "agent_app_id": "4906eeb7-9959-414e-84c6-f2445822ebe4",
+                "name": "Vivid Commenter",
+                "description": "AI-powered Reddit commenter for marketing automation. Can search Reddit, find subreddits by keywords, crawl posts, and create comments.",
+                "endpoint_url": "https://par.pixell.global/agents/4906eeb7-9959-414e-84c6-f2445822ebe4",
+                "protocol": "https",
+                "enabled": True,
+                "priority": 10
+            }
+        ],
+        description="List of configured agent apps"
+    )
+
+    # Agent Discovery Configuration
+    a2a_discovery_enabled: bool = Field(
+        default=False,
+        description="Enable automatic agent discovery from PAR"
+    )
+
+    # LangGraph UPEE Configuration
+    use_langgraph_upee: bool = Field(
+        default=True,
+        description="Use LangGraph AI-native routing instead of legacy UPEE loop"
+    )
+    a2a_par_registry_url: Optional[str] = Field(
+        default=None,
+        description="PAR registry URL for agent discovery"
+    )
+    a2a_card_refresh_interval: int = Field(
+        default=300,
+        description="Agent card refresh interval in seconds (5 minutes)"
+    )
     
     @property
     def resolved_default_model(self) -> str:

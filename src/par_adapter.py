@@ -22,24 +22,14 @@ from src.api.bridge import router as bridge_router
 from src.api.activity_manager import router as activity_manager_router
 from src.llm_providers import LLMProviderManager
 
-# Multi-agent support
-from src.agents.agent_app_discovery import AgentAppDiscoveryService
-from src.agents.agent_app_selector import AgentAppSelector
-from src.agents.agent_client_pool import AgentClientPool
 from src.utils.logging_config import get_logger
 
 # Module-level logger
 logger = get_logger("par_adapter")
 
-# Module-level state for multi-agent components
-# These are initialized once at PAR startup and reused across all requests
-_multi_agent_state = {
-    "discovery_service": None,
-    "selector": None,
-    "client_pool": None,
-    "registry": None,
-    "initialized": False
-}
+# NOTE: Multi-agent routing is now handled by LangGraph AI-native routing
+# (see src/langgraph_upee/). The old discovery service, selector, and client pool
+# have been replaced by static config (agents_config.json) + LLM-based routing.
 
 
 # ============================================================================
@@ -168,16 +158,7 @@ def create_service():
         Returns:
             Dict with success, result, and metadata
         """
-        global _multi_agent_state
-
         try:
-            # Validate multi-agent initialization
-            if not _multi_agent_state.get("initialized"):
-                logger.warning(
-                    "⚠️  Multi-agent components not initialized - routing may fail. "
-                    "Agent requests will be handled directly by PAF Core."
-                )
-
             # Parse parameters
             message = parameters.get("message", "")
             if not message:
@@ -196,21 +177,13 @@ def create_service():
                 show_thinking=show_thinking
             )
 
-            # Create UPEE engine WITH multi-agent components from global state
-            # No startup/shutdown needed - components are already initialized
-            upee_engine = UPEEEngine(
-                settings,
-                registry=_multi_agent_state.get("registry"),
-                selector=_multi_agent_state.get("selector"),
-                client_pool=_multi_agent_state.get("client_pool")
-            )
+            # Create UPEE engine - it will use LangGraph for AI-native routing
+            upee_engine = UPEEEngine(settings)
 
             logger.debug(
-                "Processing chat request",
+                "Processing chat request with LangGraph AI routing",
                 message_preview=message[:100],
-                has_registry=_multi_agent_state.get("registry") is not None,
-                has_selector=_multi_agent_state.get("selector") is not None,
-                has_client_pool=_multi_agent_state.get("client_pool") is not None
+                langgraph_enabled=settings.use_langgraph_upee
             )
 
             # Collect results and metadata
@@ -249,8 +222,6 @@ def create_service():
                             }
                         except:
                             pass
-
-            # No shutdown needed - components are managed by lifecycle hooks
 
             # If no complete event was captured, use fallback metadata
             if not complete_metadata:
@@ -314,153 +285,13 @@ def create_service():
 
 
 # ============================================================================
-# Lifecycle Management - PAR application startup/shutdown hooks
+# Lifecycle Management - No longer needed with LangGraph
 # ============================================================================
-
-async def startup(app: FastAPI = None) -> Dict[str, Any]:
-    """
-    PAR lifecycle hook: Initialize multi-agent components once at startup.
-
-    This function is called by PAR when the agent is loaded. It initializes
-    the discovery service, agent registry, selector, and client pool that
-    will be reused across all requests.
-
-    Args:
-        app: Optional FastAPI app instance (for storing in app.state)
-
-    Returns:
-        Dict with initialization status
-    """
-    global _multi_agent_state
-
-    logger.info("🚀 PAF-Core Agent startup: Initializing multi-agent components")
-    settings = Settings()
-
-    try:
-        # Initialize discovery service
-        logger.info("Initializing agent discovery service...")
-        discovery_service = AgentAppDiscoveryService(settings)
-        await discovery_service.startup()
-
-        # Get registry
-        registry = discovery_service.get_registry()
-
-        # Initialize selector
-        logger.info("Initializing agent selector...")
-        selector = AgentAppSelector(settings, registry)
-
-        # Initialize client pool
-        logger.info("Initializing agent client pool...")
-        client_pool = AgentClientPool(registry)
-        client_pool.initialize()
-
-        # Store in module-level state
-        _multi_agent_state = {
-            "discovery_service": discovery_service,
-            "selector": selector,
-            "client_pool": client_pool,
-            "registry": registry,
-            "initialized": True
-        }
-
-        # Also store in app.state if app provided (for REST endpoints)
-        if app:
-            app.state.discovery_service = discovery_service
-            app.state.selector = selector
-            app.state.client_pool = client_pool
-
-        # Log configuration details
-        agents_configured = len(registry.agents) if registry else 0
-        logger.info(
-            "Multi-agent startup complete",
-            a2a_enabled=settings.a2a_enabled,
-            agent_apps_configured=len(settings.a2a_agent_apps or []),
-            agents_discovered=agents_configured,
-            discovery_interval=settings.a2a_card_refresh_interval
-        )
-
-        # Validate configuration
-        if not settings.a2a_agent_apps:
-            logger.warning(
-                "⚠️  No A2A_AGENT_APPS configured - multi-agent routing will not work. "
-                "Set A2A_AGENT_APPS environment variable to enable agent coordination."
-            )
-
-        # Pre-warm LLM providers
-        try:
-            llm_manager = LLMProviderManager(settings)
-            await llm_manager.health_check()
-            logger.info("✅ LLM providers initialized")
-        except Exception as e:
-            logger.warning(f"⚠️  LLM provider initialization warning: {e}")
-
-        logger.info("✅ PAF-Core Agent startup complete")
-        return {
-            "status": "ready",
-            "multi_agent_enabled": True,
-            "agents_configured": agents_configured,
-            "message": "PAF-Core Agent initialized successfully"
-        }
-
-    except Exception as e:
-        logger.error(f"❌ PAF-Core Agent startup failed: {e}", exc_info=True)
-        # Set partial initialization state
-        _multi_agent_state["initialized"] = False
-        return {
-            "status": "ready_with_warnings",
-            "multi_agent_enabled": False,
-            "error": str(e),
-            "message": "PAF-Core Agent started with limited functionality"
-        }
-
-
-async def shutdown() -> Dict[str, Any]:
-    """
-    PAR lifecycle hook: Clean up multi-agent components on shutdown.
-
-    This function is called by PAR when the agent is unloaded.
-
-    Returns:
-        Dict with shutdown status
-    """
-    global _multi_agent_state
-
-    logger.info("🛑 PAF-Core Agent shutdown: Cleaning up multi-agent components")
-
-    try:
-        # Shutdown discovery service
-        if _multi_agent_state.get("discovery_service"):
-            logger.info("Shutting down discovery service...")
-            await _multi_agent_state["discovery_service"].shutdown()
-
-        # Close client pool
-        if _multi_agent_state.get("client_pool"):
-            logger.info("Closing client pool...")
-            _multi_agent_state["client_pool"].close_all()
-
-        # Reset state
-        _multi_agent_state = {
-            "discovery_service": None,
-            "selector": None,
-            "client_pool": None,
-            "registry": None,
-            "initialized": False
-        }
-
-        logger.info("✅ PAF-Core Agent shutdown complete")
-        return {"status": "shutdown_complete"}
-
-    except Exception as e:
-        logger.error(f"❌ Error during shutdown: {e}", exc_info=True)
-        return {"status": "shutdown_with_errors", "error": str(e)}
-
-
-# Backward compatibility: Keep initialize() as alias for startup()
-async def initialize(app: FastAPI = None) -> Dict[str, Any]:
-    """
-    Legacy initialization function - calls startup() for backward compatibility.
-
-    Returns:
-        Dict with initialization status
-    """
-    return await startup(app)
+# NOTE: The old startup()/shutdown() lifecycle hooks have been removed.
+# Multi-agent routing is now handled by LangGraph AI-native routing which:
+# 1. Loads agent configs on-demand from agents_config.json
+# 2. Uses LLM-based intelligent routing decisions
+# 3. Doesn't require complex discovery services or background tasks
+#
+# If PAR needs lifecycle hooks for compatibility, they can be added back
+# as simple no-ops that return success.
