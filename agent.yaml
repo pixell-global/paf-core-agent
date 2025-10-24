@@ -1,0 +1,219 @@
+version: "1.0.1"
+name: "paf-core-agent"
+display_name: "PAF Core Agent"
+description: "Intelligent orchestrator with UPEE (Understand-Plan-Execute-Evaluate) loop for multi-agent coordination"
+author: "Pixell Team"
+license: "AGPL-3.0"
+
+# Entrypoint for PAR to invoke
+entrypoint: "src.par_adapter:mount"
+
+# Multi-surface configuration
+rest:
+  entry: "src.par_adapter:mount"   # FastAPI mount function
+
+a2a:
+  service: "src.par_adapter:create_service"  # gRPC service provider
+
+# Agent capabilities
+capabilities:
+  - "chat"
+  - "upee_processing"
+  - "multi_provider_llm"
+  - "file_processing"
+  - "agent_orchestration"
+  - "a2a_protocol"
+  - "streaming_responses"
+
+# Runtime environment
+runtime: "python3.11"
+
+# Environment variables (will be read from .env)
+environment:
+  PYTHONUNBUFFERED: "1"
+  DEBUG: "${DEBUG:-false}"
+  OPENAI_API_KEY: "${OPENAI_API_KEY}"
+  OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o}"
+  A2A_AGENT_APPS: "${A2A_AGENT_APPS}"
+
+# Dependencies will be read from requirements.txt
+
+# Extended metadata
+metadata:
+  version: "1.0.1"
+  homepage: "https://github.com/pixell/paf-core-agent"
+  extensive_description: |
+    PAF Core Agent is an intelligent orchestrator implementing the UPEE (Understand-Plan-Execute-Evaluate)
+    cognitive loop for coordinating multi-agent systems.
+
+    **Key Features:**
+
+    🧠 **UPEE Cognitive Loop**
+    - **Understand**: Parse and analyze user input with context
+    - **Plan**: Develop response strategy and identify required resources
+    - **Execute**: Generate response using appropriate LLM providers
+    - **Evaluate**: Assess quality and refine if needed
+
+    🔄 **Multi-Provider LLM Support**
+    - OpenAI (GPT-3.5, GPT-4, GPT-4o)
+    - Anthropic Claude (Sonnet, Haiku, Opus)
+    - AWS Bedrock
+    - Automatic fallback and provider selection
+
+    🤝 **Agent Orchestration**
+    - A2A protocol integration
+    - Worker agent coordination via gRPC
+    - Dynamic capability-based routing
+
+    📁 **Intelligent File Processing**
+    - Excel, CSV, text file support
+    - Automatic chunking and summarization
+    - Context-aware processing
+
+    📡 **Real-time Streaming**
+    - Server-Sent Events (SSE) for thinking/content
+    - Progressive response generation
+    - Quality evaluation feedback
+
+    **Use Cases:**
+    - Intelligent chat interfaces
+    - Multi-agent orchestration
+    - Context-aware document processing
+    - Adaptive response generation with quality control
+
+  tags:
+    - "orchestrator"
+    - "upee"
+    - "multi-agent"
+    - "llm-provider"
+    - "chat"
+    - "a2a-protocol"
+    - "file-processing"
+    - "streaming"
+
+  sub_agents:
+    - name: "upee-orchestrator"
+      description: "Main UPEE cognitive loop orchestrator"
+      endpoint: "/api/chat/stream"
+      capabilities: ["chat", "upee_processing", "streaming"]
+      public: true
+
+    - name: "file-processor"
+      description: "Intelligent file processing and summarization"
+      endpoint: "/api/files/process"
+      capabilities: ["file_processing", "summarization"]
+      public: true
+
+    - name: "agent-coordinator"
+      description: "A2A agent discovery and coordination"
+      endpoint: "/api/agents/coordinate"
+      capabilities: ["agent_orchestration", "a2a_protocol"]
+      public: false
+
+  usage_guide: |
+    ## REST API Usage
+
+    ### Stream Chat with UPEE Loop
+
+    ```bash
+    curl -X POST http://localhost:60000/agents/{agent-id}/api/chat/stream \
+      -H "Content-Type: application/json" \
+      -d '{
+        "message": "Analyze this data and provide insights",
+        "show_thinking": true,
+        "model": "gpt-4o"
+      }'
+    ```
+
+    ### List Available Models
+
+    ```bash
+    curl http://localhost:60000/agents/{agent-id}/api/chat/models
+    ```
+
+    ### Check Service Status
+
+    ```bash
+    curl http://localhost:60000/agents/{agent-id}/api/chat/status
+    ```
+
+    ## gRPC A2A Usage
+
+    ### Via Python
+
+    ```python
+    import grpc
+    from pixell_runtime.proto import agent_pb2, agent_pb2_grpc
+
+    # Connect to PAR runtime
+    channel = grpc.insecure_channel('localhost:60000')
+    stub = agent_pb2_grpc.AgentServiceStub(channel)
+
+    # Send chat request
+    request = agent_pb2.ActionRequest(
+        action="chat",
+        parameters={
+            "message": "Hello, process this via UPEE",
+            "show_thinking": "true",
+            "model": "gpt-4o"
+        }
+    )
+
+    response = stub.Invoke(request)
+    print(f"Result: {response.result}")
+    ```
+
+    ### Health Check
+
+    ```python
+    health_request = agent_pb2.ActionRequest(action="health")
+    health_response = stub.Invoke(health_request)
+    print(f"Health: {health_response.result}")
+    ```
+
+    ## Features
+
+    - **Streaming Responses**: Real-time SSE streaming with thinking events
+    - **File Context**: Attach files for context-aware processing
+    - **Conversation History**: Maintain short-term memory
+    - **Quality Evaluation**: Automatic response quality assessment
+    - **Multi-Agent**: Coordinate with other A2A agents
+
+  examples:
+    - title: "Basic Chat Request"
+      code: |
+        {
+          "message": "What is the UPEE loop?",
+          "show_thinking": true
+        }
+
+    - title: "Chat with Specific Model"
+      code: |
+        {
+          "message": "Analyze this complex problem",
+          "model": "gpt-4o",
+          "temperature": 0.7,
+          "show_thinking": true
+        }
+
+    - title: "Chat with File Context"
+      code: |
+        {
+          "message": "Summarize this document",
+          "files": [
+            {
+              "file_name": "report.pdf",
+              "signed_url": "https://...",
+              "file_size": 1024000
+            }
+          ],
+          "show_thinking": true
+        }
+
+    - title: "gRPC Health Check"
+      code: |
+        # ActionRequest
+        {
+          "action": "health",
+          "parameters": {}
+        }

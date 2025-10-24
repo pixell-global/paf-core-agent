@@ -112,6 +112,7 @@ The core cognitive loop consists of four phases:
 - **🧠 Multi-Provider LLM** - OpenAI, Anthropic Claude, AWS Bedrock support
 - **📁 File Context** - Intelligent file processing and summarization
 - **🔗 gRPC Integration** - Communication with downstream worker agents
+- **🤝 A2A Integration** - Agent-to-Agent communication with card discovery
 - **📊 Observability** - Structured logging, Prometheus metrics, AWS X-Ray tracing
 - **🔒 Security** - JWT/HMAC authentication, mTLS for gRPC
 - **🐳 Container Ready** - Docker support with optimized image size
@@ -153,6 +154,31 @@ GET /api/chat/models
 
 Lists all available LLM models and their status.
 
+### A2A Integration (Agent-to-Agent Protocol)
+```http
+GET /api/chat/a2a/agents
+```
+
+Discovers available A2A agents using the standard A2A protocol.
+
+```http
+GET /api/chat/a2a/agents/{agent_id}
+```
+
+Gets detailed information about a specific A2A agent using Agent Card standard.
+
+```http
+GET /api/chat/a2a/status
+```
+
+Checks A2A server health and configuration status.
+
+#### Legacy A2A Endpoints (deprecated)
+```http
+GET /api/chat/a2a/cards        # Use /api/chat/a2a/agents instead
+GET /api/chat/a2a/cards/{id}   # Use /api/chat/a2a/agents/{id} instead
+```
+
 ## 🛠️ Development
 
 ### Project Structure
@@ -182,6 +208,10 @@ paf-core-agent/
 | `DEBUG` | Enable debug mode | No | false |
 | `MAX_CONTEXT_TOKENS` | Maximum context window | No | 4000 |
 | `DEFAULT_MODEL` | Default LLM model | No | gpt-4o |
+| `A2A_ENABLED` | Enable A2A functionality | No | true |
+| `A2A_SERVER_URL` | A2A server endpoint | No | http://localhost:9999 |
+| `A2A_AGENT_CARD` | Agent card identifier | No | - |
+| `A2A_TIMEOUT` | A2A request timeout (seconds) | No | 10 |
 
 ### Running Tests
 ```bash
@@ -321,3 +351,9 @@ For questions and support:
 ✅ **Health Monitoring** - Comprehensive health checks and metrics  
 
 **Status**: ✅ Production Ready - Core functionality complete 
+
+## License
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+For organizations that do not wish to comply with AGPL-3.0 requirements,
+commercial licensing options are available. Contact us at  engineering@pixell.global .

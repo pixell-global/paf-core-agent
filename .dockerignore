@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+.git/
+tests/
+docs/
+.DS_Store
+*.log
+*.md
+!.github/
+!.gitignore
+alembic.ini
+video_export_hashtag_collagenserum.csv
+
