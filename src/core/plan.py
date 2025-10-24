@@ -7,6 +7,9 @@ from src.schemas import ChatRequest, UPEEResult, UPEEPhase
 from src.settings import Settings
 from src.utils.logging_config import get_logger
 from src.utils.agent_client import AgentClient
+# Multi-agent support
+from src.agents.agent_app_registry import AgentAppRegistry
+from src.agents.agent_app_selector import AgentAppSelector
 
 import uuid, json, httpx, asyncio
 from langchain_openai import ChatOpenAI
@@ -20,19 +23,27 @@ from a2a.types import MessageSendParams, Message, Role, Part, TextPart
 class PlanPhase:
     """
     Planning phase of the UPEE loop.
-    
+
     Responsible for:
     - Developing response strategy based on understanding
     - Identifying required resources (LLM, external calls)
     - Planning response structure and approach
     - Determining execution parameters
     """
-    
-    def __init__(self, settings: Settings):
+
+    def __init__(
+        self,
+        settings: Settings,
+        registry: Optional[AgentAppRegistry] = None,
+        selector: Optional[AgentAppSelector] = None
+    ):
         self.settings = settings
         self.logger = get_logger("plan_phase")
-        # A2A 클라이언트 초기화
+        # Legacy single-agent A2A client for backward compatibility
         self.a2a_client = AgentClient(settings.a2a_server_url) if settings.a2a_enabled else None
+        # Multi-agent support
+        self.registry = registry
+        self.selector = selector
 
     async def process(
         self, 
@@ -119,7 +130,7 @@ class PlanPhase:
                 strategy=metadata["strategy"],
                 model=metadata["model_recommendation"],
                 needs_external_calls=metadata["needs_external_calls"],
-                a2a_agent_match=metadata.get("a2a_agent_match", {}).get("matched", False)
+                a2a_agent_match=(metadata.get("a2a_agent_match") or {}).get("matched", False)
             )
             
             return result
@@ -250,30 +261,74 @@ class PlanPhase:
         }
 
     async def _plan_external_calls(
-        self, 
-        request: ChatRequest, 
+        self,
+        request: ChatRequest,
         understanding_meta: Dict[str, Any],
         strategy: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Plan external API calls (gRPC worker agents and A2A agents)."""
-        
+
         intent = understanding_meta.get("intent", "general")
         complexity = strategy["complexity"]
         requires_external = understanding_meta.get("requires_external_calls", False)
         file_count = understanding_meta.get("file_count", 0)
-        
+
         needs_calls = False
         call_types = []
         a2a_agent_match = None
-        
+
+        # Debug logging for multi-agent routing
+        self.logger.debug(
+            "Checking for A2A agent routing",
+            has_selector=self.selector is not None,
+            has_registry=self.registry is not None,
+            a2a_enabled=self.settings.a2a_enabled,
+            user_message_preview=request.message[:100]
+        )
+
         # Check for A2A agent match first
-        if self.settings.a2a_enabled and self.a2a_client:
+        # Try multi-agent selector first, fall back to legacy single-agent
+        if self.selector and self.registry:
+            self.logger.debug("Using multi-agent selector for routing")
+            a2a_agent_match = await self._check_multi_agent_match(request)
+            if a2a_agent_match and a2a_agent_match.get("matched"):
+                needs_calls = True
+                call_types.append("a2a_agent")
+                self.logger.info(
+                    "✅ Multi-agent match found - will route to agent",
+                    skill_name=a2a_agent_match.get("skill_name"),
+                    agent_name=a2a_agent_match.get("agent_name"),
+                    agent_app_id=a2a_agent_match.get("agent_app_id"),
+                    confidence=a2a_agent_match.get("confidence"),
+                    selection_method=a2a_agent_match.get("selection_method")
+                )
+            else:
+                self.logger.debug(
+                    "No multi-agent match found - will handle directly",
+                    selector_returned=a2a_agent_match is not None
+                )
+        else:
+            # Log why multi-agent routing is not available
+            if not self.selector and not self.registry:
+                self.logger.warning(
+                    "⚠️  Multi-agent routing unavailable - selector and registry not initialized. "
+                    "Requests will be handled directly by PAF Core. "
+                    "Check PAR lifecycle hooks (startup/shutdown) are configured."
+                )
+            elif not self.selector:
+                self.logger.warning("Multi-agent routing unavailable - selector not initialized")
+            elif not self.registry:
+                self.logger.warning("Multi-agent routing unavailable - registry not initialized")
+
+        if self.settings.a2a_enabled and self.a2a_client and not (self.selector and self.registry):
+            # Legacy single-agent path
+            self.logger.debug("Falling back to legacy A2A client")
             a2a_agent_match = await self._check_a2a_agent_match(request)
             if a2a_agent_match and a2a_agent_match.get("matched"):
                 needs_calls = True
                 call_types.append("a2a_agent")
                 self.logger.info(
-                    "A2A agent match found",
+                    "A2A agent match found (legacy)",
                     skill_name=a2a_agent_match.get("skill_name"),
                     agent_name=a2a_agent_match.get("agent_name")
                 )
@@ -467,6 +522,63 @@ class PlanPhase:
 
         except Exception as e:  # pragma: no cover
             self.logger.error("Error during LLM-based A2A skill check", error=str(e), exc_info=True)
+            return None
+
+    async def _check_multi_agent_match(self, request: ChatRequest) -> Optional[Dict[str, Any]]:
+        """Use the multi-agent selector to find the best agent/skill for the request.
+
+        This replaces the legacy single-agent approach with intelligent multi-agent routing.
+
+        Returns:
+            Dictionary with agent selection results or None if no match
+        """
+        if not self.selector or not self.registry:
+            return None
+
+        try:
+            # Use the selector to find the best agent
+            selection = await self.selector.select_agent(request.message)
+
+            if not selection:
+                self.logger.debug("No agent selected for request")
+                return None
+
+            # Get the full skill data from registry
+            agent_info = self.registry.get_agent(selection.agent_app_id)
+            if not agent_info or not agent_info.agent_card:
+                self.logger.warning(
+                    f"Agent card not available for selected agent: {selection.agent_app_id}"
+                )
+                return None
+
+            # Find the skill data in the agent card
+            skills = agent_info.agent_card.get("skills", [])
+            skill_data = next(
+                (s for s in skills if s.get("id") == selection.skill_id),
+                {}
+            )
+
+            # Return format compatible with execute phase
+            return {
+                "matched": True,
+                "agent_app_id": selection.agent_app_id,  # NEW: for client pool routing
+                "skill_name": selection.skill_name,
+                "skill_id": selection.skill_id,
+                "skill_data": skill_data,
+                "agent_name": selection.agent_name,
+                "agent_url": selection.endpoint_url,
+                "endpoint_url": selection.endpoint_url,  # For execute phase
+                "confidence": selection.confidence,
+                "selection_method": selection.selection_method,
+                "parameters": {},  # Will be extracted during execute phase
+            }
+
+        except Exception as e:
+            self.logger.error(
+                "Error during multi-agent selection",
+                error=str(e),
+                exc_info=True
+            )
             return None
 
     def _is_skill_match(self, user_message: str, skill_name: str, skill_description: str) -> bool:

@@ -22,6 +22,25 @@ from src.api.bridge import router as bridge_router
 from src.api.activity_manager import router as activity_manager_router
 from src.llm_providers import LLMProviderManager
 
+# Multi-agent support
+from src.agents.agent_app_discovery import AgentAppDiscoveryService
+from src.agents.agent_app_selector import AgentAppSelector
+from src.agents.agent_client_pool import AgentClientPool
+from src.utils.logging_config import get_logger
+
+# Module-level logger
+logger = get_logger("par_adapter")
+
+# Module-level state for multi-agent components
+# These are initialized once at PAR startup and reused across all requests
+_multi_agent_state = {
+    "discovery_service": None,
+    "selector": None,
+    "client_pool": None,
+    "registry": None,
+    "initialized": False
+}
+
 
 # ============================================================================
 # REST Surface - PAR calls this to mount routes
@@ -149,7 +168,16 @@ def create_service():
         Returns:
             Dict with success, result, and metadata
         """
+        global _multi_agent_state
+
         try:
+            # Validate multi-agent initialization
+            if not _multi_agent_state.get("initialized"):
+                logger.warning(
+                    "⚠️  Multi-agent components not initialized - routing may fail. "
+                    "Agent requests will be handled directly by PAF Core."
+                )
+
             # Parse parameters
             message = parameters.get("message", "")
             if not message:
@@ -168,12 +196,27 @@ def create_service():
                 show_thinking=show_thinking
             )
 
-            # Process through UPEE engine
-            upee_engine = UPEEEngine(settings)
-            await upee_engine.startup()
+            # Create UPEE engine WITH multi-agent components from global state
+            # No startup/shutdown needed - components are already initialized
+            upee_engine = UPEEEngine(
+                settings,
+                registry=_multi_agent_state.get("registry"),
+                selector=_multi_agent_state.get("selector"),
+                client_pool=_multi_agent_state.get("client_pool")
+            )
 
-            # Collect results
+            logger.debug(
+                "Processing chat request",
+                message_preview=message[:100],
+                has_registry=_multi_agent_state.get("registry") is not None,
+                has_selector=_multi_agent_state.get("selector") is not None,
+                has_client_pool=_multi_agent_state.get("client_pool") is not None
+            )
+
+            # Collect results and metadata
             result_content = []
+            complete_metadata = {}
+
             async for event in upee_engine.process_request(chat_request):
                 if event.get("event") == EventType.CONTENT:
                     data = event.get("data", "{}")
@@ -187,15 +230,47 @@ def create_service():
                     elif isinstance(data, str):
                         result_content.append(data)
 
-            await upee_engine.shutdown()
+                elif event.get("event") == EventType.COMPLETE:
+                    # Extract metadata from CompleteEvent
+                    data = event.get("data", "{}")
+                    if isinstance(data, str):
+                        try:
+                            complete_event_data = json.loads(data)
+                            # Include agent attribution fields
+                            complete_metadata = {
+                                "model": complete_event_data.get("model", model or settings.resolved_default_model),
+                                "agent_used": complete_event_data.get("agent_used"),
+                                "agent_app_id": complete_event_data.get("agent_app_id"),
+                                "skill_used": complete_event_data.get("skill_used"),
+                                "skill_id": complete_event_data.get("skill_id"),
+                                "routing_source": complete_event_data.get("routing_source"),
+                                "total_tokens": complete_event_data.get("total_tokens"),
+                                "duration": complete_event_data.get("duration")
+                            }
+                        except:
+                            pass
+
+            # No shutdown needed - components are managed by lifecycle hooks
+
+            # If no complete event was captured, use fallback metadata
+            if not complete_metadata:
+                complete_metadata = {"model": model or settings.resolved_default_model}
+
+            logger.debug(
+                "Chat request completed",
+                routing_source=complete_metadata.get("routing_source"),
+                agent_used=complete_metadata.get("agent_used"),
+                result_length=len("".join(result_content))
+            )
 
             return {
                 "success": True,
                 "result": "".join(result_content),
-                "metadata": {"model": model or settings.resolved_default_model}
+                "metadata": complete_metadata
             }
 
         except Exception as e:
+            logger.error(f"Error handling chat request: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
@@ -239,40 +314,153 @@ def create_service():
 
 
 # ============================================================================
-# Initialization Handler (Optional - for pre-warming, etc.)
+# Lifecycle Management - PAR application startup/shutdown hooks
 # ============================================================================
 
-async def initialize():
+async def startup(app: FastAPI = None) -> Dict[str, Any]:
     """
-    Optional initialization function called by PAR on agent load.
-    Use this for pre-warming models, loading caches, etc.
+    PAR lifecycle hook: Initialize multi-agent components once at startup.
+
+    This function is called by PAR when the agent is loaded. It initializes
+    the discovery service, agent registry, selector, and client pool that
+    will be reused across all requests.
+
+    Args:
+        app: Optional FastAPI app instance (for storing in app.state)
 
     Returns:
         Dict with initialization status
     """
-    print("🚀 Initializing PAF-Core Agent...")
+    global _multi_agent_state
+
+    logger.info("🚀 PAF-Core Agent startup: Initializing multi-agent components")
     settings = Settings()
 
     try:
+        # Initialize discovery service
+        logger.info("Initializing agent discovery service...")
+        discovery_service = AgentAppDiscoveryService(settings)
+        await discovery_service.startup()
+
+        # Get registry
+        registry = discovery_service.get_registry()
+
+        # Initialize selector
+        logger.info("Initializing agent selector...")
+        selector = AgentAppSelector(settings, registry)
+
+        # Initialize client pool
+        logger.info("Initializing agent client pool...")
+        client_pool = AgentClientPool(registry)
+        client_pool.initialize()
+
+        # Store in module-level state
+        _multi_agent_state = {
+            "discovery_service": discovery_service,
+            "selector": selector,
+            "client_pool": client_pool,
+            "registry": registry,
+            "initialized": True
+        }
+
+        # Also store in app.state if app provided (for REST endpoints)
+        if app:
+            app.state.discovery_service = discovery_service
+            app.state.selector = selector
+            app.state.client_pool = client_pool
+
+        # Log configuration details
+        agents_configured = len(registry.agents) if registry else 0
+        logger.info(
+            "Multi-agent startup complete",
+            a2a_enabled=settings.a2a_enabled,
+            agent_apps_configured=len(settings.a2a_agent_apps or []),
+            agents_discovered=agents_configured,
+            discovery_interval=settings.a2a_card_refresh_interval
+        )
+
+        # Validate configuration
+        if not settings.a2a_agent_apps:
+            logger.warning(
+                "⚠️  No A2A_AGENT_APPS configured - multi-agent routing will not work. "
+                "Set A2A_AGENT_APPS environment variable to enable agent coordination."
+            )
+
         # Pre-warm LLM providers
-        llm_manager = LLMProviderManager(settings)
-        await llm_manager.health_check()
+        try:
+            llm_manager = LLMProviderManager(settings)
+            await llm_manager.health_check()
+            logger.info("✅ LLM providers initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  LLM provider initialization warning: {e}")
 
-        print("✅ PAF-Core Agent initialized")
-        return {"status": "ready", "message": "PAF-Core Agent initialized successfully"}
+        logger.info("✅ PAF-Core Agent startup complete")
+        return {
+            "status": "ready",
+            "multi_agent_enabled": True,
+            "agents_configured": agents_configured,
+            "message": "PAF-Core Agent initialized successfully"
+        }
+
     except Exception as e:
-        print(f"⚠️  PAF-Core Agent initialization warning: {e}")
-        return {"status": "ready_with_warnings", "message": str(e)}
+        logger.error(f"❌ PAF-Core Agent startup failed: {e}", exc_info=True)
+        # Set partial initialization state
+        _multi_agent_state["initialized"] = False
+        return {
+            "status": "ready_with_warnings",
+            "multi_agent_enabled": False,
+            "error": str(e),
+            "message": "PAF-Core Agent started with limited functionality"
+        }
 
 
-async def shutdown():
+async def shutdown() -> Dict[str, Any]:
     """
-    Optional cleanup function called by PAR on agent unload.
+    PAR lifecycle hook: Clean up multi-agent components on shutdown.
+
+    This function is called by PAR when the agent is unloaded.
 
     Returns:
         Dict with shutdown status
     """
-    print("🛑 Shutting down PAF-Core Agent...")
-    # Cleanup resources if needed
-    print("✅ PAF-Core Agent shutdown complete")
-    return {"status": "shutdown_complete"}
+    global _multi_agent_state
+
+    logger.info("🛑 PAF-Core Agent shutdown: Cleaning up multi-agent components")
+
+    try:
+        # Shutdown discovery service
+        if _multi_agent_state.get("discovery_service"):
+            logger.info("Shutting down discovery service...")
+            await _multi_agent_state["discovery_service"].shutdown()
+
+        # Close client pool
+        if _multi_agent_state.get("client_pool"):
+            logger.info("Closing client pool...")
+            _multi_agent_state["client_pool"].close_all()
+
+        # Reset state
+        _multi_agent_state = {
+            "discovery_service": None,
+            "selector": None,
+            "client_pool": None,
+            "registry": None,
+            "initialized": False
+        }
+
+        logger.info("✅ PAF-Core Agent shutdown complete")
+        return {"status": "shutdown_complete"}
+
+    except Exception as e:
+        logger.error(f"❌ Error during shutdown: {e}", exc_info=True)
+        return {"status": "shutdown_with_errors", "error": str(e)}
+
+
+# Backward compatibility: Keep initialize() as alias for startup()
+async def initialize(app: FastAPI = None) -> Dict[str, Any]:
+    """
+    Legacy initialization function - calls startup() for backward compatibility.
+
+    Returns:
+        Dict with initialization status
+    """
+    return await startup(app)

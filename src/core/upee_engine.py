@@ -31,44 +31,88 @@ class UPEEEngine:
     4. Evaluate: Assess quality and refine if needed
     """
     
-    def __init__(self, settings: Settings, grpc_manager=None, a2a_client=None):
+    def __init__(
+        self,
+        settings: Settings,
+        grpc_manager=None,
+        a2a_client=None,
+        registry=None,
+        selector=None,
+        client_pool=None
+    ):
+        """
+        Initialize UPEE Engine.
+
+        Args:
+            settings: Application settings
+            grpc_manager: Optional gRPC manager for worker agents
+            a2a_client: Optional legacy A2A client
+            registry: Optional agent registry (for multi-agent mode)
+            selector: Optional agent selector (for multi-agent mode)
+            client_pool: Optional client pool (for multi-agent mode)
+        """
         self.settings = settings
         self.logger = get_logger("upee_engine")
         self.grpc_manager = grpc_manager
-        
-        # Initialize agent manager
-        self.agent_manager = AgentManager(settings)
-        
-        # Initialize phases
+
+        # Multi-agent components (passed from par_adapter or main.py)
+        self.registry = registry
+        self.selector = selector
+        self.client_pool = client_pool
+
+        # Determine mode: multi-agent (with components) or legacy (with agent_manager)
+        self._use_multi_agent_mode = bool(registry and selector)
+
+        # Initialize agent manager only if NOT using multi-agent components
+        if not self._use_multi_agent_mode:
+            self.logger.info("Using legacy agent manager mode")
+            self.agent_manager = AgentManager(settings)
+            self._agent_manager_started = False
+        else:
+            self.logger.info(
+                "Using multi-agent mode",
+                has_registry=bool(registry),
+                has_selector=bool(selector),
+                has_client_pool=bool(client_pool)
+            )
+            self.agent_manager = None
+            self._agent_manager_started = False
+
+        # Initialize phases with multi-agent components
         self.understand_phase = UnderstandPhase(settings)
-        self.plan_phase = PlanPhase(settings)
-        self.execute_phase = ExecutePhase(settings, grpc_manager)
+        self.plan_phase = PlanPhase(settings, registry=registry, selector=selector)
+        self.execute_phase = ExecutePhase(settings, grpc_manager, client_pool=client_pool)
         self.evaluate_phase = EvaluatePhase(settings)
-        
+
         # Tracking
         self.current_request_id: Optional[str] = None
         self.phase_results: Dict[UPEEPhase, UPEEResult] = {}
         self.retry_count: int = 0
         self.max_retries: int = 3
         self.retry_attempts: List[Dict[str, Any]] = []
-        self._agent_manager_started = False
-        
+
         #Legacy A2A Client
         self.a2a_client = a2a_client or AgentClient(settings.a2a_server_url)
     
     async def startup(self):
         """Start the UPEE engine and its components."""
-        if not self._agent_manager_started:
+        # Only start agent_manager if using legacy mode (not multi-agent mode)
+        if self.agent_manager and not self._agent_manager_started:
             await self.agent_manager.startup()
             self._agent_manager_started = True
-            self.logger.info("UPEE Engine started with agent manager")
-    
+            self.logger.info("UPEE Engine started with legacy agent manager")
+        elif self._use_multi_agent_mode:
+            self.logger.info("UPEE Engine using multi-agent components (no startup needed)")
+
     async def shutdown(self):
         """Shutdown the UPEE engine and its components."""
-        if self._agent_manager_started:
+        # Only shutdown agent_manager if using legacy mode
+        if self.agent_manager and self._agent_manager_started:
             await self.agent_manager.shutdown()
             self._agent_manager_started = False
             self.logger.info("UPEE Engine shutdown complete")
+        elif self._use_multi_agent_mode:
+            self.logger.info("UPEE Engine using multi-agent components (no shutdown needed)")
     
     async def process_request(
         self, 
@@ -687,14 +731,15 @@ class UPEEEngine:
         }
     
     async def _create_completion_event(
-        self, 
-        request: ChatRequest, 
+        self,
+        request: ChatRequest,
         duration: float
     ) -> Dict[str, Any]:
-        """Create the final completion event with retry information."""
+        """Create the final completion event with retry information and A2A agent attribution."""
         execute_result = self.phase_results.get(UPEEPhase.EXECUTE)
         evaluate_result = self.phase_results.get(UPEEPhase.EVALUATE)
-        
+        plan_result = self.phase_results.get(UPEEPhase.PLAN)
+
         # Build retry summary
         retry_summary = {
             "total_attempts": len(self.retry_attempts) + 1,
@@ -702,7 +747,7 @@ class UPEEEngine:
             "final_quality_score": evaluate_result.metadata.get("quality_score", 0.0) if evaluate_result else 0.0,
             "attempt_scores": [attempt.get("quality_score", 0.0) for attempt in self.retry_attempts]
         }
-        
+
         # Include retry information in completion data
         retry_summary = {
             "total_attempts": len(self.retry_attempts),
@@ -711,12 +756,42 @@ class UPEEEngine:
             "max_retries_reached": self.retry_count >= self.max_retries,
             "attempt_scores": [attempt["quality_score"] for attempt in self.retry_attempts]
         }
-        
+
+        # Extract A2A agent attribution info
+        agent_used = "PAF Core Agent"  # Default to core agent
+        agent_app_id = None
+        skill_used = None
+        skill_id = None
+        routing_source = "core_agent"
+
+        # Check if A2A agent was used
+        if execute_result:
+            external_results = execute_result.metadata.get("external_results", {})
+            a2a_result = external_results.get("a2a_agent", {})
+
+            if a2a_result and a2a_result.get("status") == "success":
+                # A2A agent was used successfully
+                agent_app_id = a2a_result.get("agent_app_id")
+                agent_used = a2a_result.get("agent_name", "External Agent")
+                routing_source = a2a_result.get("source", "a2a_agent")
+
+                # Get skill info from plan metadata
+                if plan_result:
+                    a2a_match = plan_result.metadata.get("a2a_agent_match", {})
+                    if a2a_match.get("matched"):
+                        skill_used = a2a_match.get("skill_name")
+                        skill_id = a2a_match.get("skill_id")
+
         complete_data = CompleteEvent(
             total_tokens=execute_result.metadata.get("tokens_used", 0) if execute_result else 0,
             duration=duration,
             model=execute_result.metadata.get("model_used", request.model or self.settings.resolved_default_model) if execute_result else (request.model or self.settings.resolved_default_model),
-            timestamp=time.time()
+            timestamp=time.time(),
+            agent_used=agent_used,
+            agent_app_id=agent_app_id,
+            skill_used=skill_used,
+            skill_id=skill_id,
+            routing_source=routing_source
         )
         
         # Add retry information to the completion event
