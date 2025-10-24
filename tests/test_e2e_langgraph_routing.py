@@ -293,3 +293,68 @@ async def test_e2e_vivid_commenter_variants(
             f"Query '{query}' should route to agent, got {output['routing_decision']}"
         assert output["selected_agent_name"] == "Vivid Commenter", \
             f"Query '{query}' should select Vivid Commenter"
+
+
+@pytest.mark.asyncio
+async def test_e2e_output_includes_agent_id(
+    mock_settings,
+    mock_llm_manager,
+    vivid_agent
+):
+    """
+    E2E Test: Verify output includes agent_app_id for proper attribution.
+
+    This is the critical test that validates the metadata fix.
+    """
+
+    # Mock LLM responses
+    mock_llm_manager.get_completion.side_effect = [
+        # Understand
+        LLMResponse(
+            content='{"intent_summary": "Reddit query", "primary_intent": "search", "topics": ["reddit"], "entities": [], "complexity": "simple", "requires_specialized_knowledge": true, "domain": "reddit", "keywords": ["subreddit"]}',
+            model="gpt-4o",
+            provider="openai",
+            finish_reason="stop"
+        ),
+        # Routing - select agent
+        LLMResponse(
+            content='{"decision": "agent", "agent_id": "4906eeb7-9959-414e-84c6-f2445822ebe4", "confidence": 0.95, "reasoning": "Reddit query"}',
+            model="gpt-4o",
+            provider="openai",
+            finish_reason="stop"
+        ),
+        # Evaluate
+        LLMResponse(
+            content='{"quality_score": 0.90, "feedback": "Good", "needs_refinement": false, "suggestions": ""}',
+            model="gpt-4o",
+            provider="openai",
+            finish_reason="stop"
+        )
+    ]
+
+    # Mock gRPC client
+    mock_grpc_client = Mock()
+    mock_grpc_client.send_message = AsyncMock(return_value={
+        "success": True,
+        "data": {"content": "Here are subreddits..."}
+    })
+
+    # Execute
+    with patch('src.langgraph_upee.nodes.routing.load_agents', return_value=[vivid_agent]):
+        with patch('src.langgraph_upee.nodes.execute_agent.GrpcA2AClient', return_value=mock_grpc_client):
+            user_input: UPEEInput = {
+                "user_message": "find reddit AI communities",
+                "request_id": "test-agent-id"
+            }
+
+            output = await execute_upee_graph(user_input, mock_settings, mock_llm_manager)
+
+    # CRITICAL VALIDATION: Output must include agent_id
+    assert output["selected_agent_id"] == "4906eeb7-9959-414e-84c6-f2445822ebe4", \
+        f"Output must include selected_agent_id, got: {output.get('selected_agent_id')}"
+
+    assert output["selected_agent_name"] == "Vivid Commenter", \
+        f"Output must include selected_agent_name, got: {output.get('selected_agent_name')}"
+
+    assert output["routing_decision"] == "agent", \
+        f"Routing decision should be 'agent', got: {output['routing_decision']}"

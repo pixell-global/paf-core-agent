@@ -68,6 +68,7 @@ class UPEEOutput(TypedDict, total=False):
     response: str  # Final response to user
     routing_decision: str  # "core" or "agent"
     selected_agent_name: Optional[str]  # Name of agent if routed
+    selected_agent_id: Optional[str]  # Agent app ID if routed
     quality_score: float  # Final quality score
     request_id: str  # Request identifier
     error: Optional[str]  # Error if failed

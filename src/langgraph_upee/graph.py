@@ -162,10 +162,12 @@ async def execute_upee_graph(
         final_state = await graph.ainvoke(initial_state)
 
         # Build output
+        selected_agent = final_state.get("selected_agent")
         output: UPEEOutput = {
             "response": final_state.get("response", ""),
             "routing_decision": final_state.get("routing_decision", "core"),
-            "selected_agent_name": final_state.get("selected_agent").name if final_state.get("selected_agent") else None,
+            "selected_agent_name": selected_agent.name if selected_agent else None,
+            "selected_agent_id": selected_agent.agent_app_id if selected_agent else None,
             "quality_score": final_state.get("quality_score", 0.0),
             "request_id": request_id,
             "error": final_state.get("error")

@@ -269,7 +269,9 @@ class UPEEEngine:
                 metadata={
                     "quality_score": output.get("quality_score", 0.0),
                     "routing_decision": output.get("routing_decision"),
-                    "selected_agent": output.get("selected_agent_name"),
+                    "selected_agent_name": output.get("selected_agent_name"),
+                    "selected_agent_id": output.get("selected_agent_id"),
+                    "langgraph_execution": True,  # Flag to identify LangGraph path
                     "error": output.get("error")
                 },
                 completed=True
@@ -878,13 +880,37 @@ class UPEEEngine:
         skill_id = None
         routing_source = "core_agent"
 
-        # Check if A2A agent was used
-        if execute_result:
+        # Check if LangGraph was used (NEW - check this first)
+        if evaluate_result and evaluate_result.metadata.get("langgraph_execution"):
+            routing_decision = evaluate_result.metadata.get("routing_decision")
+
+            if routing_decision == "agent":
+                # LangGraph routed to an agent
+                agent_used = evaluate_result.metadata.get("selected_agent_name", "External Agent")
+                agent_app_id = evaluate_result.metadata.get("selected_agent_id")
+                routing_source = "langgraph_agent"
+
+                self.logger.info(
+                    "LangGraph agent routing detected in completion event",
+                    agent_name=agent_used,
+                    agent_id=agent_app_id,
+                    routing_source=routing_source
+                )
+            else:
+                # LangGraph routed to core
+                routing_source = "langgraph_core"
+                self.logger.debug(
+                    "LangGraph core routing detected in completion event",
+                    routing_source=routing_source
+                )
+
+        # Legacy UPEE path (existing logic)
+        elif execute_result:
             external_results = execute_result.metadata.get("external_results", {})
             a2a_result = external_results.get("a2a_agent", {})
 
             if a2a_result and a2a_result.get("status") == "success":
-                # A2A agent was used successfully
+                # A2A agent was used successfully (legacy path)
                 agent_app_id = a2a_result.get("agent_app_id")
                 agent_used = a2a_result.get("agent_name", "External Agent")
                 routing_source = a2a_result.get("source", "a2a_agent")
