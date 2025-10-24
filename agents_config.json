@@ -1,0 +1,28 @@
+{
+  "agents": [
+    {
+      "agent_app_id": "4906eeb7-9959-414e-84c6-f2445822ebe4",
+      "name": "Vivid Commenter",
+      "endpoint": "https://par.pixell.global/agents/4906eeb7-9959-414e-84c6-f2445822ebe4",
+      "protocol": "grpc",
+      "description": "Expert Reddit marketing agent specialized in community engagement, subreddit discovery, and authentic content generation for Reddit",
+      "capabilities": [
+        "Find and analyze relevant subreddits for any topic or niche",
+        "Research Reddit communities, their rules, culture, and engagement patterns",
+        "Generate authentic, contextually appropriate Reddit comments and posts",
+        "Identify trending discussions and high-engagement opportunities on Reddit",
+        "Analyze subreddit demographics and user behavior patterns",
+        "Recommend content strategies for specific Reddit communities"
+      ],
+      "example_queries": [
+        "find subreddits about AI and machine learning",
+        "what are good subreddits for marketing my SaaS product?",
+        "help me find communities interested in sustainable technology",
+        "which subreddits discuss cryptocurrency trading?",
+        "find active Reddit communities about fitness and nutrition",
+        "what subreddits should I post about my indie game?",
+        "discover subreddits related to remote work and digital nomads"
+      ]
+    }
+  ]
+}
