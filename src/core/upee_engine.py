@@ -97,10 +97,12 @@ class UPEEEngine:
         self.a2a_client = a2a_client or AgentClient(settings.a2a_server_url)
 
         # LangGraph UPEE (new AI-native routing)
-        self._use_langgraph = settings.use_langgraph_upee if hasattr(settings, 'use_langgraph_upee') else False
+        self._use_langgraph = getattr(settings, 'use_langgraph_upee', True)  # Default to True
         if self._use_langgraph:
             self.llm_manager = LLMProviderManager(settings)
             self.logger.info("UPEE Engine configured to use LangGraph AI-native routing")
+        else:
+            self.logger.info("UPEE Engine using legacy routing (LangGraph disabled)")
 
     async def startup(self):
         """Start the UPEE engine and its components."""
