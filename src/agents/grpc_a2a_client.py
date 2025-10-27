@@ -163,35 +163,88 @@ class GrpcA2AClient:
         return host, port
 
     def _build_action_request(self, message: Dict[str, Any]) -> agent_pb2.ActionRequest:
-        """Build proto ActionRequest from message payload.
+        """Build proto ActionRequest from message payload using standard A2A format.
+
+        Builds a JSON-RPC 2.0 compliant A2A message with the following structure:
+        {
+            "jsonrpc": "2.0",
+            "id": "<uuid>",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "kind": "message",
+                    "role": "user",
+                    "messageId": "<uuid>",
+                    "metadata": {
+                        "skill": "<skill_id>",
+                        "params": {<parameters>}
+                    },
+                    "parts": [
+                        {"kind": "text", "text": "<json_params>"}
+                    ]
+                }
+            }
+        }
 
         Args:
-            message: Message payload dict
+            message: Message payload dict with skill_id, parameters, etc.
 
         Returns:
-            ActionRequest proto message
+            ActionRequest proto message with A2A format
         """
-        # Extract parameters
+        # Extract key fields
+        skill_id = message.get("skill_id", "")
         parameters = message.get("parameters", {})
+        user_message = message.get("user_message", "")
 
-        # Convert all parameters to strings (proto requirement)
-        str_parameters = {}
-        for key, value in parameters.items():
-            if isinstance(value, (dict, list)):
-                str_parameters[key] = json.dumps(value)
-            else:
-                str_parameters[key] = str(value)
+        # Generate unique IDs
+        request_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
 
-        # Add skill metadata
-        str_parameters["skill_id"] = message.get("skill_id", "")
-        str_parameters["skill_name"] = message.get("skill_name", "")
-        str_parameters["user_message"] = message.get("user_message", "")
+        # Build standard A2A message structure
+        a2a_params = {
+            "message": {
+                "kind": "message",
+                "role": "user",
+                "messageId": message_id,
+                "metadata": {
+                    "skill": skill_id,
+                    "params": parameters
+                },
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": json.dumps(parameters, ensure_ascii=False)
+                    }
+                ]
+            }
+        }
 
-        # Create request
+        # Add user_message to parts if provided
+        if user_message:
+            a2a_params["message"]["parts"].insert(0, {
+                "kind": "text",
+                "text": user_message
+            })
+
+        # Create A2A message
+        a2a_message = agent_pb2.A2AMessage(
+            jsonrpc="2.0",
+            id=request_id,
+            method="message/send",
+            params_json=json.dumps(a2a_params)
+        )
+
+        # Wrap in ActionRequest
         request = agent_pb2.ActionRequest(
-            action="invoke",
-            parameters=str_parameters,
-            request_id=str(uuid.uuid4())
+            a2a_message=a2a_message
+        )
+
+        logger.debug(
+            "Built A2A message",
+            request_id=request_id,
+            message_id=message_id,
+            skill=skill_id
         )
 
         return request

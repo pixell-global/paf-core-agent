@@ -47,8 +47,9 @@ def test_parse_endpoint():
 
 
 def test_build_action_request():
-    """Test building ActionRequest from message payload."""
+    """Test building ActionRequest from message payload with A2A format."""
     from src.proto import agent_pb2
+    import json
 
     client = GrpcA2AClient(
         agent_app_id="test-id",
@@ -68,15 +69,40 @@ def test_build_action_request():
 
     request = client._build_action_request(message)
 
+    # Verify it's an ActionRequest
     assert isinstance(request, agent_pb2.ActionRequest)
-    assert request.action == "invoke"
-    assert request.parameters["skill_id"] == "test_skill"
-    assert request.parameters["skill_name"] == "Test Skill"
-    assert request.parameters["user_message"] == "Find 10 subreddits"
-    assert "keywords" in request.parameters
-    assert request.request_id != ""
 
-    print("✅ ActionRequest building test passed")
+    # Verify it has A2A message
+    assert request.HasField("a2a_message")
+    a2a_msg = request.a2a_message
+
+    # Verify A2A structure
+    assert a2a_msg.jsonrpc == "2.0"
+    assert a2a_msg.id != ""
+    assert a2a_msg.method == "message/send"
+    assert a2a_msg.params_json != ""
+
+    # Parse and verify params
+    params = json.loads(a2a_msg.params_json)
+    assert "message" in params
+
+    msg = params["message"]
+    assert msg["kind"] == "message"
+    assert msg["role"] == "user"
+    assert msg["messageId"] != ""
+
+    # Verify metadata
+    metadata = msg["metadata"]
+    assert metadata["skill"] == "test_skill"
+    assert metadata["params"]["keywords"] == ["ai", "machine learning"]
+    assert metadata["params"]["limit"] == 10
+
+    # Verify parts array exists
+    assert "parts" in msg
+    assert len(msg["parts"]) >= 1
+    assert msg["parts"][0]["kind"] == "text"
+
+    print("✅ ActionRequest building test passed (A2A format)")
 
 
 def test_parse_action_result_success():

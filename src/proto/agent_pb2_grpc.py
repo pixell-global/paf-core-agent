@@ -3,12 +3,10 @@
 import grpc
 import warnings
 
-from . import agent_pb2 as agent__pb2
+from src.proto import agent_pb2 as src_dot_proto_dot_agent__pb2
 
-GRPC_GENERATED_VERSION = '1.63.0'
+GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
-EXPECTED_ERROR_RELEASE = '1.65.0'
-SCHEDULED_RELEASE_DATE = 'June 25, 2024'
 _version_not_supported = False
 
 try:
@@ -18,15 +16,12 @@ except ImportError:
     _version_not_supported = True
 
 if _version_not_supported:
-    warnings.warn(
+    raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in agent_pb2_grpc.py depends on'
+        + ' but the generated code in src/proto/agent_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
-        + f' This warning will become an error in {EXPECTED_ERROR_RELEASE},'
-        + f' scheduled for release on {SCHEDULED_RELEASE_DATE}.',
-        RuntimeWarning
     )
 
 
@@ -42,23 +37,23 @@ class AgentServiceStub(object):
         """
         self.Health = channel.unary_unary(
                 '/pixell.agent.AgentService/Health',
-                request_serializer=agent__pb2.Empty.SerializeToString,
-                response_deserializer=agent__pb2.HealthStatus.FromString,
+                request_serializer=src_dot_proto_dot_agent__pb2.Empty.SerializeToString,
+                response_deserializer=src_dot_proto_dot_agent__pb2.HealthStatus.FromString,
                 _registered_method=True)
         self.DescribeCapabilities = channel.unary_unary(
                 '/pixell.agent.AgentService/DescribeCapabilities',
-                request_serializer=agent__pb2.Empty.SerializeToString,
-                response_deserializer=agent__pb2.Capabilities.FromString,
+                request_serializer=src_dot_proto_dot_agent__pb2.Empty.SerializeToString,
+                response_deserializer=src_dot_proto_dot_agent__pb2.Capabilities.FromString,
                 _registered_method=True)
         self.Invoke = channel.unary_unary(
                 '/pixell.agent.AgentService/Invoke',
-                request_serializer=agent__pb2.ActionRequest.SerializeToString,
-                response_deserializer=agent__pb2.ActionResult.FromString,
+                request_serializer=src_dot_proto_dot_agent__pb2.ActionRequest.SerializeToString,
+                response_deserializer=src_dot_proto_dot_agent__pb2.ActionResult.FromString,
                 _registered_method=True)
         self.Ping = channel.unary_unary(
                 '/pixell.agent.AgentService/Ping',
-                request_serializer=agent__pb2.Empty.SerializeToString,
-                response_deserializer=agent__pb2.Pong.FromString,
+                request_serializer=src_dot_proto_dot_agent__pb2.Empty.SerializeToString,
+                response_deserializer=src_dot_proto_dot_agent__pb2.Pong.FromString,
                 _registered_method=True)
 
 
@@ -99,28 +94,29 @@ def add_AgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
-                    request_deserializer=agent__pb2.Empty.FromString,
-                    response_serializer=agent__pb2.HealthStatus.SerializeToString,
+                    request_deserializer=src_dot_proto_dot_agent__pb2.Empty.FromString,
+                    response_serializer=src_dot_proto_dot_agent__pb2.HealthStatus.SerializeToString,
             ),
             'DescribeCapabilities': grpc.unary_unary_rpc_method_handler(
                     servicer.DescribeCapabilities,
-                    request_deserializer=agent__pb2.Empty.FromString,
-                    response_serializer=agent__pb2.Capabilities.SerializeToString,
+                    request_deserializer=src_dot_proto_dot_agent__pb2.Empty.FromString,
+                    response_serializer=src_dot_proto_dot_agent__pb2.Capabilities.SerializeToString,
             ),
             'Invoke': grpc.unary_unary_rpc_method_handler(
                     servicer.Invoke,
-                    request_deserializer=agent__pb2.ActionRequest.FromString,
-                    response_serializer=agent__pb2.ActionResult.SerializeToString,
+                    request_deserializer=src_dot_proto_dot_agent__pb2.ActionRequest.FromString,
+                    response_serializer=src_dot_proto_dot_agent__pb2.ActionResult.SerializeToString,
             ),
             'Ping': grpc.unary_unary_rpc_method_handler(
                     servicer.Ping,
-                    request_deserializer=agent__pb2.Empty.FromString,
-                    response_serializer=agent__pb2.Pong.SerializeToString,
+                    request_deserializer=src_dot_proto_dot_agent__pb2.Empty.FromString,
+                    response_serializer=src_dot_proto_dot_agent__pb2.Pong.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'pixell.agent.AgentService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('pixell.agent.AgentService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -143,8 +139,8 @@ class AgentService(object):
             request,
             target,
             '/pixell.agent.AgentService/Health',
-            agent__pb2.Empty.SerializeToString,
-            agent__pb2.HealthStatus.FromString,
+            src_dot_proto_dot_agent__pb2.Empty.SerializeToString,
+            src_dot_proto_dot_agent__pb2.HealthStatus.FromString,
             options,
             channel_credentials,
             insecure,
@@ -170,8 +166,8 @@ class AgentService(object):
             request,
             target,
             '/pixell.agent.AgentService/DescribeCapabilities',
-            agent__pb2.Empty.SerializeToString,
-            agent__pb2.Capabilities.FromString,
+            src_dot_proto_dot_agent__pb2.Empty.SerializeToString,
+            src_dot_proto_dot_agent__pb2.Capabilities.FromString,
             options,
             channel_credentials,
             insecure,
@@ -197,8 +193,8 @@ class AgentService(object):
             request,
             target,
             '/pixell.agent.AgentService/Invoke',
-            agent__pb2.ActionRequest.SerializeToString,
-            agent__pb2.ActionResult.FromString,
+            src_dot_proto_dot_agent__pb2.ActionRequest.SerializeToString,
+            src_dot_proto_dot_agent__pb2.ActionResult.FromString,
             options,
             channel_credentials,
             insecure,
@@ -224,8 +220,8 @@ class AgentService(object):
             request,
             target,
             '/pixell.agent.AgentService/Ping',
-            agent__pb2.Empty.SerializeToString,
-            agent__pb2.Pong.FromString,
+            src_dot_proto_dot_agent__pb2.Empty.SerializeToString,
+            src_dot_proto_dot_agent__pb2.Pong.FromString,
             options,
             channel_credentials,
             insecure,
