@@ -412,12 +412,12 @@ class PlanPhase:
 
             def maybe_run_tools(ai_msg: AIMessage):
                 """실제 LangChain tool 호출을 담당."""
-                if ai_msg.additional_kwargs.get("tool_calls"):
+                if ai_msg.tool_calls:
                     results = []
                     called_skill = None
-                    for call in ai_msg.additional_kwargs["tool_calls"]:
-                        name = call["function"]["name"]
-                        args = json.loads(call["function"]["arguments"])
+                    for call in ai_msg.tool_calls:
+                        name = call["name"]
+                        args = call["args"]
                         called_skill = name
                         tool = {t.name: t for t in tools}.get(name)
                         if tool:
