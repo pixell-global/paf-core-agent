@@ -73,6 +73,9 @@ async def root():
     }
 
 
+def get_app():
+    return app
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
