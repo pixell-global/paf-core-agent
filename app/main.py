@@ -3,6 +3,8 @@ Main FastAPI application for PAF Core Agent.
 """
 
 import os
+import sys
+import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

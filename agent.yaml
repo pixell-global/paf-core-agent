@@ -1,4 +1,4 @@
-version: "1.0.1"
+version: "1.0.3"
 name: "paf-core-agent"
 display_name: "PAF Core Agent"
 description: "PAF Core Agent"
@@ -30,7 +30,7 @@ rest:
 # Dependencies section omitted intentionally; rely on requirements.txt
 
 metadata:
-  version: "1.0.1"
+  version: "1.0.3"
   homepage: "https://github.com/pixell-global/paf-core-agent"
   tags:
     - "paf"
