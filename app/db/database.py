@@ -4,16 +4,34 @@ This file handles all database connections and provides session factories.
 """
 
 import os
+from app.settings import get_settings
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData
+import aiomysql
 
-# Database URL from environment variable
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", 
-    "postgresql+asyncpg://postgres:password@localhost:5432/paf_core_agent"
-)
+# Database URL assembly
+settings = get_settings()
+
+def _build_db_url() -> str:
+    # Prefer explicit DATABASE_URL if provided
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        return env_url
+
+    # Fallback: compose from DB_HOST/DB_USER/DB_PASSWORD/DB_NAME
+    if settings.db_host and settings.db_user and settings.db_password and settings.db_name:
+        host = settings.db_host
+        user = settings.db_user
+        password = settings.db_password
+        name = settings.db_name
+        return f"mysql+aiomysql://{user}:{password}@{host}:3306/{name}"
+
+    # Default local
+    return "mysql+aiomysql://root:password@localhost:3306/paf_core_agent"
+
+DATABASE_URL = _build_db_url()
 
 # Create async engine
 # echo=True will log all SQL queries (useful for debugging)
@@ -80,7 +98,7 @@ async def test_connection():
 async def init_db():
     """Initialize database by creating all tables."""
     async with engine.begin() as conn:
-        # Import all models to ensure they're registered
+        # Import all models to ensure they're registered (including Activity)
         from app.db.models import core, workers, jobs
         
         # Create all tables

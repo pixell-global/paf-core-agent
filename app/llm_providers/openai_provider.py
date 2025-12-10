@@ -64,6 +64,14 @@ class OpenAIProvider(LLMProvider):
     
     def _format_messages(self, request: LLMRequest) -> List[Dict[str, str]]:
         """Format request into OpenAI messages format."""
+        # If request has messages array, use it directly
+        if request.messages:
+            return [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
+        
+        # Otherwise, fall back to legacy prompt format
         messages = []
         
         if request.system_prompt:

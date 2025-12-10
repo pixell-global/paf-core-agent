@@ -28,7 +28,7 @@ class AgentDiscoveryService:
         self.logger.info("Starting agent discovery service")
         
         # Perform initial discovery
-        await self.discover_agents()
+        # await self.discover_agents() # TODO: 윈도우에서 NOT IMPLEMENTED error 예외 발생
         
         # Start background discovery task
         self._discovery_task = asyncio.create_task(self._discovery_loop())
@@ -75,7 +75,7 @@ class AgentDiscoveryService:
     async def _run_pixell_list(self) -> Optional[str]:
         """Execute pixell list command and return output."""
         try:
-            # Run pixell list command
+            # Run pixell list command TODO: 윈도우에서 NOT IMPLEMENTED error 예외 발생
             process = await asyncio.create_subprocess_exec(
                 "pixell", "list", "--format", "json",
                 stdout=asyncio.subprocess.PIPE,

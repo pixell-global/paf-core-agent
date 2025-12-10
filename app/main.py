@@ -3,6 +3,8 @@ Main FastAPI application for PAF Core Agent.
 """
 
 import os
+import sys
+import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +14,12 @@ from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.api.debug import router as debug_router
 from app.api.agents import router as agents_router
+from app.api.activity_manager import router as activity_manager_router
 from app.settings import Settings
+
+# Acitivty Manager
+from app.core.activity_manger import ActivityManager
+
 
 # Initialize settings
 settings = Settings()
@@ -55,6 +62,7 @@ app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(health_router, prefix="/api/health", tags=["health"])
 app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
 app.include_router(agents_router)
+app.include_router(activity_manager_router, prefix="/api/activity-manager", tags=["activity-manager"])
 
 @app.get("/")
 async def root():
@@ -66,6 +74,9 @@ async def root():
         "docs": "/docs"
     }
 
+
+def get_app():
+    return app
 
 if __name__ == "__main__":
     import uvicorn

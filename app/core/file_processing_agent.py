@@ -819,7 +819,54 @@ Please install these packages to enable Excel file processing.
                             result_content += f"Shape: {df.shape[0]} rows × {df.shape[1]} columns\n"
                             result_content += f"Columns: {list(df.columns)}\n\n"
                             result_content += "First 10 rows:\n"
-                            result_content += df.head(10).to_string(index=False)
+                            
+                            # For wide tables, select key columns for better display
+                            if df.shape[1] > 10:
+                                # Try to identify and prioritize important columns
+                                important_cols = []
+                                
+                                # Always include username/title if they exist
+                                for col in ['username', 'title', 'name', 'id']:
+                                    if col in df.columns:
+                                        important_cols.append(col)
+                                
+                                # Include numeric columns with high variance
+                                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                                for col in ['views', 'likes', 'comments', 'shares', 'engagement_rate_%']:
+                                    if col in numeric_cols and col not in important_cols:
+                                        important_cols.append(col)
+                                
+                                # Add date columns
+                                for col in df.columns:
+                                    if 'date' in col.lower() or 'uploaded' in col.lower():
+                                        if col not in important_cols:
+                                            important_cols.append(col)
+                                
+                                # Fill remaining slots with other columns
+                                remaining_cols = [col for col in df.columns if col not in important_cols]
+                                important_cols.extend(remaining_cols[:max(0, 8 - len(important_cols))])
+                                
+                                # Truncate long text fields for better display
+                                display_df = df.head(10)[important_cols].copy()
+                                for col in display_df.select_dtypes(include=['object']).columns:
+                                    display_df[col] = display_df[col].astype(str).str[:50] + '...'
+                                
+                                # Try to use markdown format if available
+                                try:
+                                    result_content += display_df.to_markdown(index=False)
+                                except:
+                                    result_content += display_df.to_string(index=False, max_colwidth=50)
+                                result_content += f"\n\nNote: Showing {len(important_cols)} of {df.shape[1]} columns for readability."
+                            else:
+                                # For narrow tables, show all columns but truncate text
+                                display_df = df.head(10).copy()
+                                for col in display_df.select_dtypes(include=['object']).columns:
+                                    display_df[col] = display_df[col].astype(str).str[:100] + '...'
+                                # Try to use markdown format if available
+                                try:
+                                    result_content += display_df.to_markdown(index=False)
+                                except:
+                                    result_content += display_df.to_string(index=False, max_colwidth=100)
                             
                             # Summary statistics
                             numeric_cols = df.select_dtypes(include=['number']).columns

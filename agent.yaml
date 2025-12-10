@@ -1,0 +1,42 @@
+version: "1.0.4"
+name: "paf-core-agent"
+display_name: "PAF Core Agent"
+description: "PAF Core Agent"
+author: "Pixell Global"
+license: "MIT"
+
+runtime: "python3.11"
+
+capabilities:
+  - "upee-loop"
+  - "llm-integration"
+  - "file-processing"
+
+# Environment variables supplied at runtime
+# Local/dev reads the same names from .env via python-dotenv
+environment:
+  DEBUG: "${DEBUG}"
+  DEFAULT_MODEL: "${DEFAULT_MODEL}"
+  MAX_CONTEXT_TOKENS: "${MAX_CONTEXT_TOKENS}"
+  DB_HOST: "${DB_HOST}"
+  DB_USER: "${DB_USER}"
+  DB_PASSWORD: "${DB_PASSWORD}"
+  DB_NAME: "${DB_NAME}"
+  OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+rest:
+  entry: "app.main:get_app"
+
+# Dependencies section omitted intentionally; rely on requirements.txt
+
+metadata:
+  version: "1.0.4"
+  homepage: "https://github.com/pixell-global/paf-core-agent"
+  tags:
+    - "paf"
+    - "core"
+    - "agent"
+    - "upee"
+    - "llm"
+    - "file"
+    - "processing"
