@@ -38,6 +38,7 @@ dependencies = [
     "tenacity>=8.2.3",
     "tiktoken>=0.5.2",
     "aiomysql>=0.2.0",
+    "pyyaml>=6.0.0",
     # A2A (Agent2Agent) Protocol SDK
     "a2a-sdk>=0.1.0",
     # LangChain
@@ -49,6 +50,7 @@ dependencies = [
     # Database
     "sqlalchemy>=2.0.43",
     "pixell-kit>=0.4.12",
+    "grpcio>=1.76.0",
 ]
 
 [project.optional-dependencies]

@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     show_thinking_default: bool = Field(default=False, description="Show thinking events by default")
     
     # A2A Server Configuration
-    a2a_server_url: str = Field(default="http://localhost:9999", description="A2A 서버의 엔드포인트 URL")
+    a2a_server_url: str = Field(default="https://par.pixell.global/agents/3d0e7e50-fd36-4664-ba9d-42b1ce602c50/a2a", description="A2A 서버의 엔드포인트 URL") # TODO: 에이전트 라우팅 기능 구현 필요
     a2a_enabled: bool = Field(default=True, description="A2A 기능 활성화 여부")
     a2a_agent_card: Optional[str] = Field(default=None, description="A2A 에이전트 카드 ID")
     a2a_agent_url: Optional[str] = Field(default=None, description="A2A 에이전트 URL")

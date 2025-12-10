@@ -1,8 +1,11 @@
 """Debug API endpoints for troubleshooting file uploads and request processing."""
 
 import json
+import os
 import time
-from typing import Dict, Any, List
+import yaml
+from pathlib import Path
+from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
@@ -229,3 +232,71 @@ async def _check_file_processing_capabilities():
         capabilities["agentic_processor_available"] = False
     
     return capabilities
+
+
+@router.get("/env")
+async def get_agent_environment_variables(
+    settings: Settings = Depends(get_settings)
+):
+    """
+    agent.yaml에 정의된 모든 환경변수의 키와 값을 출력합니다.
+    디버깅용으로 실제 값을 그대로 반환합니다.
+    """
+    try:
+        # agent.yaml 파일 경로 찾기
+        current_dir = Path(__file__).parent.parent.parent
+        agent_yaml_path = current_dir / "agent.yaml"
+        
+        if not agent_yaml_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="agent.yaml 파일을 찾을 수 없습니다."
+            )
+        
+        # agent.yaml 파싱
+        with open(agent_yaml_path, "r", encoding="utf-8") as f:
+            agent_config = yaml.safe_load(f)
+        
+        # environment 섹션에서 환경변수 키 추출
+        env_vars_config = agent_config.get("environment", {})
+        env_keys = list(env_vars_config.keys())
+        
+        # 환경변수 값 수집
+        env_vars = {}
+        for key in env_keys:
+            # 환경변수에서 실제 값 가져오기
+            value = os.getenv(key)
+            env_vars[key] = {
+                "value": value,
+                "is_set": value is not None,
+                "defined_in_yaml": True
+            }
+        
+        result = {
+            "timestamp": time.time(),
+            "agent_yaml_path": str(agent_yaml_path),
+            "environment_variables": env_vars,
+            "total_count": len(env_vars),
+            "set_count": sum(1 for v in env_vars.values() if v["is_set"]),
+            "unset_count": sum(1 for v in env_vars.values() if not v["is_set"])
+        }
+        
+        logger.info(
+            "Environment variables retrieved",
+            total_count=result["total_count"],
+            set_count=result["set_count"]
+        )
+        
+        return JSONResponse(content=result)
+        
+    except yaml.YAMLError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"agent.yaml 파싱 오류: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to retrieve environment variables: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"환경변수 조회 중 오류 발생: {str(e)}"
+        )
