@@ -182,8 +182,15 @@ class ExecutePhase:
         strategy = plan_meta.get("strategy", "direct_response")
         approach = plan_meta.get("response_structure", "structured")
         
+        # Get language information
+        language_info = {
+            "language": understanding_meta.get("language", "English"),
+            "language_code": understanding_meta.get("language_code", "en"),
+            "confidence": understanding_meta.get("language_confidence", "low")
+        }
+        
         # Build system prompt based on strategy
-        system_prompt = self._build_system_prompt(intent, strategy, approach)
+        system_prompt = self._build_system_prompt(intent, strategy, approach, language_info)
         
         # Build user prompt with file context
         user_prompt = await self._build_user_prompt(request, understanding_meta)
@@ -193,10 +200,21 @@ class ExecutePhase:
         
         return full_prompt
     
-    def _build_system_prompt(self, intent: str, strategy: str, approach: str) -> str:
+    def _build_system_prompt(self, intent: str, strategy: str, approach: str, language_info: Dict[str, str]) -> str:
         """Build the system prompt based on the execution plan."""
         
         base_prompt = "You are PAF Core Agent, a helpful AI assistant designed to provide intelligent responses through a structured UPEE (Understand → Plan → Execute → Evaluate) process."
+        
+        # Add language instruction if not English
+        if language_info.get("language_code", "en") != "en":
+            language_instruction = f"""
+IMPORTANT: The user is writing in {language_info['language']}. You MUST respond in {language_info['language']}.
+- Write your entire response in {language_info['language']}
+- Do NOT translate technical terms, code, file paths, or data sources unless explicitly asked
+- Keep variable names, function names, and code snippets in their original language
+- If referencing external sources or documentation, keep those references in their original language
+"""
+            base_prompt = f"{base_prompt}\n{language_instruction}"
         
         # Customize based on intent and strategy
         intent_prompts = {

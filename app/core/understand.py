@@ -55,6 +55,9 @@ class UnderstandPhase:
             # Analyze user intent
             intent_analysis = await self._analyze_intent(request.message)
             
+            # Detect language using LLM
+            language_info = await self._detect_language_with_llm(request.message)
+            
             # Process conversation history for short-term memory
             history_analysis = file_processor.process_conversation_history(
                 request.history, request.memory_limit or 10
@@ -97,7 +100,9 @@ class UnderstandPhase:
                 "context_tokens": context_analysis["estimated_tokens"],
                 "file_count": len(request.files) if request.files else 0,
                 "requires_external_calls": self._needs_external_calls(intent_analysis),
-                "language": intent_analysis.get("language", "english"),
+                "language": language_info.get("language", "English"),
+                "language_code": language_info.get("language_code", "en"),
+                "language_confidence": language_info.get("confidence", "low"),
                 "topics": intent_analysis.get("topics", []),
                 "entities": intent_analysis.get("entities", []),
                 # Enhanced file processing metadata
@@ -210,7 +215,6 @@ class UnderstandPhase:
         return {
             "intent": primary_intent,
             "confidence": confidence,
-            "language": "english",  # Simple detection
             "topics": topics,
             "entities": entities,
             "word_count": len(message.split()),
@@ -522,4 +526,64 @@ class UnderstandPhase:
         if context_summary.strip():
             full_summary += f"\n\n{context_summary}"
         
-        return full_summary 
+        return full_summary
+    
+    async def _detect_language_with_llm(self, message: str) -> Dict[str, Any]:
+        """Detect the language of the message using LLM."""
+        try:
+            # Create a simple prompt for language detection
+            prompt = f"""Analyze the language of the following message and respond ONLY with a JSON object in this exact format:
+{{
+    "language": "the full language name (e.g., English, Korean, Spanish)",
+    "language_code": "the ISO 639-1 code (e.g., en, ko, es)",
+    "confidence": "high, medium, or low"
+}}
+
+Message: {message}
+
+Important: Respond ONLY with the JSON object, no additional text."""
+
+            # Use LLM to detect language
+            from app.llm_providers import LLMRequest
+            
+            llm_request = LLMRequest(
+                model=self.settings.default_model,
+                prompt=prompt,
+                temperature=0.1,  # Low temperature for deterministic output
+                max_tokens=100,
+                stream=False
+            )
+            
+            response = await self.llm_manager.get_completion(llm_request)
+            
+            if response.content:
+                # Parse the JSON response
+                import json
+                try:
+                    # Remove markdown code blocks if present
+                    content = response.content.strip()
+                    if content.startswith("```"):
+                        # Remove markdown code block markers
+                        content = content.split("```")[1]
+                        if content.startswith("json"):
+                            content = content[4:]
+                        content = content.strip()
+                    
+                    language_data = json.loads(content)
+                    return {
+                        "language": language_data.get("language", "English"),
+                        "language_code": language_data.get("language_code", "en"),
+                        "confidence": language_data.get("confidence", "low")
+                    }
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Failed to parse language detection response: {response.content}")
+            
+        except Exception as e:
+            self.logger.error(f"Language detection failed: {e}")
+        
+        # Default to English if detection fails
+        return {
+            "language": "English",
+            "language_code": "en",
+            "confidence": "low"
+        } 
